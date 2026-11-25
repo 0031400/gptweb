@@ -1,0 +1,31 @@
+{
+  "listen": "127.0.0.1:8080",
+  "web_dir": "./web/dist",
+  "session_secret": "请替换成一段足够长的随机字符串",
+  "session_hours": 168,
+  "request_timeout_seconds": 300,
+  "users": [
+    {
+      "username": "alice",
+      "password": "换成你的密码",
+      "token_tags": ["work"]
+    },
+    {
+      "username": "bob",
+      "password": "换成你的密码",
+      "token_tags": ["work", "personal"]
+    }
+  ],
+  "tokens": [
+    {
+      "tag": "work",
+      "name": "工作号",
+      "session_file": "sessions/work.json"
+    },
+    {
+      "tag": "personal",
+      "name": "个人号",
+      "session_file": "sessions/personal.json"
+    }
+  ]
+}

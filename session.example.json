@@ -1,0 +1,12 @@
+{
+  "access_token": "在这里填入 ChatGPT 的 accessToken（eyJ...）",
+  "account_id": "18bb1260-83ea-4f52-aea7-bd93683eeca3",
+  "cookies": {
+    "cf_clearance": "可选，通常不需要"
+  },
+  "build": "可选，chatgpt.com 页面 html 上的 data-build",
+  "email": "you@example.com",
+  "plan": "free",
+  "expires_at": 0,
+  "updated_at": "2026-01-01T00:00:00Z"
+}

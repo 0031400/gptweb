@@ -1,0 +1,10 @@
+# 登录态文件里有 access token，不要提交
+sessions/
+config.json
+gptweb.exe
+gptweb
+*.log
+
+# 前端
+web/node_modules/
+web/dist/
