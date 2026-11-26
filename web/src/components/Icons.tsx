@@ -105,12 +105,3 @@ export function IconFile({ size = 18 }: IconProps) {
   )
 }
 
-export function IconImage({ size = 18 }: IconProps) {
-  return (
-    <svg {...base(size)}>
-      <rect x="3" y="4" width="18" height="16" rx="3" />
-      <circle cx="8.5" cy="9.5" r="1.5" />
-      <path d="m21 16-4.5-4.5L9 19" />
-    </svg>
-  )
-}

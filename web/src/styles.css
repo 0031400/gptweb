@@ -911,6 +911,28 @@ button {
   border-radius: 10px;
   border: 1px solid var(--border);
 }
+.unsupported-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 1px 9px;
+  border: 1px dashed var(--border-strong);
+  border-radius: 999px;
+  background: var(--muted);
+  color: var(--text-dim);
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: nowrap;
+  vertical-align: 0.05em;
+}
+.unsupported-chip::before {
+  content: "";
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--text-faint);
+  flex: none;
+}
 .markdown .katex {
   font-size: 1.04em;
 }
