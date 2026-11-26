@@ -19,6 +19,7 @@ type Props = {
   onDelete: (item: ConversationSummary) => void
   onLoadMore: () => void
   onRefresh: () => void
+  refreshing: boolean
   onLogout: () => void
   open: boolean
   onClose: () => void
@@ -66,8 +67,16 @@ export default function Sidebar(props: Props) {
           <strong>GptWeb</strong>
         </div>
         <div className="sidebar-head-actions">
-          <button type="button" className="icon-btn" onClick={props.onRefresh} title="刷新会话" aria-label="刷新会话">
-            <IconRefresh />
+          <button
+            type="button"
+            className="icon-btn"
+            onClick={props.onRefresh}
+            disabled={props.refreshing}
+            aria-busy={props.refreshing}
+            title={props.refreshing ? '刷新中…' : '刷新会话'}
+            aria-label={props.refreshing ? '正在刷新会话' : '刷新会话'}
+          >
+            {props.refreshing ? <span className="spinner small" /> : <IconRefresh />}
           </button>
           <button type="button" className="icon-btn sidebar-close" onClick={props.onClose} aria-label="关闭菜单">
             <IconClose />

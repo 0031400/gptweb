@@ -20,6 +20,7 @@ export default function Workspace({ me, onLogout }: { me: Me; onLogout: () => vo
   const [conversations, setConversations] = useState<ConversationSummary[]>([])
   const [total, setTotal] = useState(0)
   const [listLoading, setListLoading] = useState(false)
+  const [refreshing, setRefreshing] = useState(false)
   const [listError, setListError] = useState('')
   const [chat, setChat] = useState<Conversation | null>(null)
   const [messages, setMessages] = useState<Message[]>([])
@@ -93,6 +94,21 @@ export default function Workspace({ me, onLogout }: { me: Me; onLogout: () => vo
     if (!tag) return
     void loadConversations(0, true)
   }, [tag, loadConversations])
+
+  const refreshConversations = async () => {
+    if (refreshing) return
+    setRefreshing(true)
+    const startedAt = Date.now()
+    try {
+      await loadConversations(0, true)
+      const remaining = 450 - (Date.now() - startedAt)
+      if (remaining > 0) {
+        await new Promise((resolve) => window.setTimeout(resolve, remaining))
+      }
+    } finally {
+      setRefreshing(false)
+    }
+  }
 
   const filteredConversations = useMemo(() => {
     const keyword = search.trim().toLowerCase()
@@ -269,7 +285,8 @@ export default function Workspace({ me, onLogout }: { me: Me; onLogout: () => vo
         onNew={newChat}
         onDelete={setConfirmItem}
         onLoadMore={() => void loadConversations(conversations.length, false)}
-        onRefresh={() => void loadConversations(0, true)}
+        onRefresh={() => void refreshConversations()}
+        refreshing={refreshing}
         onLogout={onLogout}
         open={sidebarOpen}
         onClose={() => setSidebarOpen(false)}
