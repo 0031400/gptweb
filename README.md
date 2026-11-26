@@ -108,7 +108,7 @@ fetch('/api/auth/session').then(r => r.json()).then(s => console.log(JSON.string
 
 ## 功能
 
-- 用户登录 / 退出，Cookie 会话，按 IP 限制连续登录失败次数。
+- 用户登录 / 退出，Cookie 会话。
 - 按用户授权展示可用的 ChatGPT 账号标签，支持多个 session 文件。
 - 拉取 ChatGPT 会话列表，支持搜索、加载更多、删除。
 - 查看历史会话并继续对话，历史里的图片和文件附件会一并展示。

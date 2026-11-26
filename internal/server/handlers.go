@@ -49,19 +49,11 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if !decodeBody(w, r, &body) {
 		return
 	}
-	key := s.limiter.clientKey(r)
-	if s.limiter.blocked(key) {
-		writeError(w, http.StatusTooManyRequests, "尝试次数过多，请稍后再试")
-		return
-	}
 	user, ok := s.cfg.User(strings.TrimSpace(body.Username))
 	if !ok || !passwordsEqual(user.Password, body.Password) {
-		s.limiter.fail(key)
-		time.Sleep(350 * time.Millisecond)
 		writeError(w, http.StatusUnauthorized, "用户名或密码不正确")
 		return
 	}
-	s.limiter.success(key)
 	s.issueCookie(w, r, user.Username)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"username":   user.Username,

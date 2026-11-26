@@ -18,7 +18,6 @@ type Server struct {
 	clients map[string]*chatgpt.Client
 	tokens  []config.Token
 	secret  []byte
-	limiter *loginLimiter
 	webDir  string
 	mux     *http.ServeMux
 }
@@ -29,7 +28,6 @@ func New(cfg *config.Config) (*Server, error) {
 		clients: map[string]*chatgpt.Client{},
 		tokens:  cfg.Tokens,
 		secret:  []byte(cfg.SessionSecret),
-		limiter: newLoginLimiter(),
 		webDir:  cfg.Resolve(cfg.WebDir),
 	}
 	for _, t := range cfg.Tokens {

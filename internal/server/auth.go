@@ -7,10 +7,8 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
-	"net"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 
 	"gptweb/internal/config"
@@ -102,59 +100,4 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 
 func passwordsEqual(a, b string) bool {
 	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
-}
-
-// loginLimiter 对连续失败做简单的按 IP 限制，避免暴力猜密码。
-type loginLimiter struct {
-	mu      sync.Mutex
-	entries map[string]*loginEntry
-}
-
-type loginEntry struct {
-	count int
-	until time.Time
-}
-
-func newLoginLimiter() *loginLimiter {
-	return &loginLimiter{entries: map[string]*loginEntry{}}
-}
-
-func (l *loginLimiter) clientKey(r *http.Request) string {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return r.RemoteAddr
-	}
-	return host
-}
-
-func (l *loginLimiter) blocked(key string) bool {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	e := l.entries[key]
-	if e == nil {
-		return false
-	}
-	if time.Now().After(e.until) {
-		delete(l.entries, key)
-		return false
-	}
-	return e.count >= 8
-}
-
-func (l *loginLimiter) fail(key string) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	e := l.entries[key]
-	if e == nil {
-		e = &loginEntry{}
-		l.entries[key] = e
-	}
-	e.count++
-	e.until = time.Now().Add(10 * time.Minute)
-}
-
-func (l *loginLimiter) success(key string) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	delete(l.entries, key)
 }
