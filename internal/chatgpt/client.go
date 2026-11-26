@@ -359,18 +359,31 @@ func normalizeConversation(detail map[string]any) *Conversation {
 func normalizeMessage(m map[string]any) (Message, bool) {
 	author, _ := m["author"].(map[string]any)
 	role, _ := author["role"].(string)
-	if role != "user" && role != "assistant" {
+	if role != "user" && role != "assistant" && role != "tool" {
 		return Message{}, false
 	}
 	metadata, _ := m["metadata"].(map[string]any)
 	channel, _ := m["channel"].(string)
 	fallback := fallbackMarkdown(metadata)
+	content, _ := m["content"].(map[string]any)
+	attachments := messageAttachments(content, metadata)
+
+	// 图片生成等工具结果放在 role=tool 的消息里，最终 assistant 文本
+	// 并不会带附件；把带附件的 tool 消息作为一条 assistant 附件消息，
+	// 否则历史里看不到生成/上传的图片。
+	if role == "tool" {
+		if len(attachments) == 0 {
+			return Message{}, false
+		}
+		id, _ := m["id"].(string)
+		return Message{ID: id, Role: "assistant", CreateTime: messageCreateTime(m), Attachments: attachments}, true
+	}
+
 	// 网页端有时会把同一轮回答再生成一条 hidden 的自定义 UI 消息；
 	// 只有它自己带 fallbackMarkdown 时才需要保留，否则会与可见消息重复。
 	if metadata["is_visually_hidden_from_conversation"] == true && (channel != "final" || fallback == "") {
 		return Message{}, false
 	}
-	content, _ := m["content"].(map[string]any)
 	text := ""
 	if role == "assistant" {
 		// 助手内容只使用 fallbackMarkdown；没有该字段时留空（附件仍保留）。
@@ -379,7 +392,6 @@ func normalizeMessage(m map[string]any) (Message, bool) {
 		// 用户消息没有 fallbackMarkdown，只能使用 content.parts。
 		text = contentText(content)
 	}
-	attachments := messageAttachments(content, metadata)
 	if strings.TrimSpace(text) == "" && len(attachments) == 0 {
 		return Message{}, false
 	}
@@ -414,11 +426,12 @@ func messageAttachments(content, metadata map[string]any) []Attachment {
 				continue
 			}
 			addOrMerge(Attachment{
-				ID:     id,
-				Kind:   "image",
-				Width:  intValue(part["width"]),
-				Height: intValue(part["height"]),
-				Size:   int64Value(part["size_bytes"]),
+				ID:       id,
+				Kind:     "image",
+				MimeType: stringValue(part["mime_type"]),
+				Width:    intValue(part["width"]),
+				Height:   intValue(part["height"]),
+				Size:     int64Value(part["size_bytes"]),
 			})
 		}
 	}
