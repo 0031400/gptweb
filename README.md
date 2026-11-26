@@ -27,6 +27,8 @@ go run . -config config.json
 
 打开 `http://127.0.0.1:8080`，默认账号是 `admin` / `admin123`（**请先修改 `config.json`**）。
 
+> Windows 下重新编译前请先停止正在运行的 `gptweb.exe`，否则 Go 可能把旧程序备份成 `gptweb.exe~`。
+
 开发前端时可以开两个终端：
 
 ```powershell

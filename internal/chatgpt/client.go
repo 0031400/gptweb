@@ -10,7 +10,6 @@ import (
 	"io"
 	"os"
 	"regexp"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -316,34 +315,21 @@ type Conversation struct {
 }
 
 func (c *Client) GetConversation(ctx context.Context, id string) (*Conversation, error) {
-	paths := []string{
-		"/backend-api/conversations/" + id + "?num_turns=100&include_has_versions=true",
-		"/backend-api/conversation/" + id + "?include_model_switcher_metadata=false",
+	// 只使用复数接口：它的 messages 里带有完整的 fallbackMarkdown。
+	path := "/backend-api/conversations/" + id + "?num_turns=100&include_has_versions=true"
+	resp, err := c.do(ctx, fhttp.MethodGet, path, nil, nil)
+	if err != nil {
+		return nil, err
 	}
-	var lastErr error
-	for _, path := range paths {
-		resp, err := c.do(ctx, fhttp.MethodGet, path, nil, nil)
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		if resp.StatusCode != fhttp.StatusOK {
-			lastErr = readError(resp, "读取会话")
-			continue
-		}
-		var detail map[string]any
-		err = json.NewDecoder(resp.Body).Decode(&detail)
-		resp.Body.Close()
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		return normalizeConversation(detail), nil
+	if resp.StatusCode != fhttp.StatusOK {
+		return nil, readError(resp, "读取会话")
 	}
-	if lastErr == nil {
-		lastErr = errors.New("读取会话失败")
+	defer resp.Body.Close()
+	var detail map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&detail); err != nil {
+		return nil, err
 	}
-	return nil, lastErr
+	return normalizeConversation(detail), nil
 }
 
 func normalizeConversation(detail map[string]any) *Conversation {
@@ -365,60 +351,10 @@ func normalizeConversation(detail map[string]any) *Conversation {
 			}
 		}
 	}
-	if len(conv.Messages) == 0 {
-		if mapping, ok := detail["mapping"].(map[string]any); ok {
-			var ordered []map[string]any
-			if conv.CurrentNode != "" {
-				ordered = branchMessages(mapping, conv.CurrentNode)
-			}
-			if len(ordered) == 0 {
-				ordered = allMessages(mapping)
-			}
-			for _, m := range ordered {
-				if msg, ok := normalizeMessage(m); ok {
-					conv.Messages = append(conv.Messages, msg)
-				}
-			}
-		}
-	}
 	if conv.CurrentNode == "" && len(conv.Messages) > 0 {
 		conv.CurrentNode = conv.Messages[len(conv.Messages)-1].ID
 	}
 	return conv
-}
-
-func branchMessages(mapping map[string]any, current string) []map[string]any {
-	var branch []map[string]any
-	seen := map[string]bool{}
-	for nodeID := current; nodeID != "" && !seen[nodeID]; {
-		seen[nodeID] = true
-		node, _ := mapping[nodeID].(map[string]any)
-		if node == nil {
-			break
-		}
-		if message, ok := node["message"].(map[string]any); ok {
-			branch = append(branch, message)
-		}
-		nodeID, _ = node["parent"].(string)
-	}
-	for i, j := 0, len(branch)-1; i < j; i, j = i+1, j-1 {
-		branch[i], branch[j] = branch[j], branch[i]
-	}
-	return branch
-}
-
-func allMessages(mapping map[string]any) []map[string]any {
-	var result []map[string]any
-	for _, raw := range mapping {
-		node, _ := raw.(map[string]any)
-		if message, ok := node["message"].(map[string]any); ok {
-			result = append(result, message)
-		}
-	}
-	sort.SliceStable(result, func(i, j int) bool {
-		return messageCreateTime(result[i]) < messageCreateTime(result[j])
-	})
-	return result
 }
 
 func normalizeMessage(m map[string]any) (Message, bool) {
@@ -428,11 +364,18 @@ func normalizeMessage(m map[string]any) (Message, bool) {
 		return Message{}, false
 	}
 	metadata, _ := m["metadata"].(map[string]any)
-	if metadata["is_visually_hidden_from_conversation"] == true {
+	channel, _ := m["channel"].(string)
+	fallback := fallbackMarkdown(metadata)
+	// 网页端有时会把同一轮回答再生成一条 hidden 的自定义 UI 消息；
+	// 只有它自己带 fallbackMarkdown 时才需要保留，否则会与可见消息重复。
+	if metadata["is_visually_hidden_from_conversation"] == true && (channel != "final" || fallback == "") {
 		return Message{}, false
 	}
 	content, _ := m["content"].(map[string]any)
 	text := cleanAssistantText(contentText(content))
+	if fallback != "" {
+		text = cleanAssistantText(fallback)
+	}
 	attachments := messageAttachments(content, metadata)
 	if strings.TrimSpace(text) == "" && len(attachments) == 0 {
 		return Message{}, false
@@ -586,12 +529,35 @@ func int64Value(value any) int64 {
 	return 0
 }
 
-var fileCitePattern = regexp.MustCompile(`<FileCite[^>]*/>`)
+var (
+	uiSelfClosingPattern = regexp.MustCompile(`<(?:icon|Cite|FileCite)\b[^>]*/>`)
+	uiContainerPattern   = regexp.MustCompile(`</?(?:badge|box|text|divider)\b[^>]*>`)
+)
 
-// cleanAssistantText 去掉模型输出里的文件引用标记，避免前端直接看到私有标记。
+// cleanAssistantText 去掉模型输出里的引用标记和 ChatGPT 专属 UI 标签，
+// 保留容器标签内的文字，避免前端直接看到 `<badge>`、`<box>` 这类私有标记。
 func cleanAssistantText(value string) string {
-	value = fileCitePattern.ReplaceAllString(value, "")
+	value = uiSelfClosingPattern.ReplaceAllString(value, "")
+	value = uiContainerPattern.ReplaceAllString(value, "")
 	return strings.TrimSpace(value)
+}
+
+func hasUITags(value string) bool {
+	for _, tag := range []string{"<badge", "<box", "<text", "<divider", "<icon", "<Cite", "<FileCite"} {
+		if strings.Contains(value, tag) {
+			return true
+		}
+	}
+	return false
+}
+
+func fallbackMarkdown(metadata map[string]any) string {
+	dil, _ := metadata["model_dil_v2"].(map[string]any)
+	if dil == nil {
+		return ""
+	}
+	value, _ := dil["fallbackMarkdown"].(string)
+	return value
 }
 
 func contentText(content map[string]any) string {
@@ -780,14 +746,15 @@ func (c *Client) SendMessage(ctx context.Context, conversationID, parentID, text
 		convID = conversationID
 	}
 	result := SendResult{ConversationID: convID, MessageID: msgID, Text: cleanAssistantText(full)}
-	if err == nil && full == "" && convID != "" {
-		// 有些响应只给事件补丁，没给出完整文本；回头读一次会话兜底。
+	if err == nil && convID != "" && (full == "" || hasUITags(full)) {
+		// 没有正文，或流里带了 ChatGPT 自定义 UI 标签时，回头读一次会话：
+		// 历史归一化会优先使用 metadata.model_dil_v2.fallbackMarkdown。
 		if conv, getErr := c.GetConversation(ctx, convID); getErr == nil {
 			for i := len(conv.Messages) - 1; i >= 0; i-- {
 				if conv.Messages[i].Role == "assistant" {
 					result.Text = conv.Messages[i].Text
 					result.MessageID = conv.Messages[i].ID
-					if onDelta != nil {
+					if full == "" && onDelta != nil {
 						_ = onDelta(result.Text)
 					}
 					break

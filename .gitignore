@@ -8,3 +8,6 @@ gptweb
 # 前端
 web/node_modules/
 web/dist/
+
+# debug downloads
+tmp/
