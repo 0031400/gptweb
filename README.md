@@ -127,7 +127,6 @@ fetch('/api/auth/session').then(r => r.json()).then(s => console.log(JSON.string
 | POST | `/api/login` | 登录，body `{username,password}` |
 | POST | `/api/logout` | 退出登录 |
 | GET | `/api/me` | 当前用户和可用标签 |
-| GET | `/api/tokens` | 账号标签及 session 就绪状态 |
 | GET | `/api/conversations?tag=&offset=&limit=` | 会话列表 |
 | GET | `/api/conversations/{id}?tag=` | 会话详情（已归一化为 user/assistant 消息） |
 | DELETE | `/api/conversations/{id}?tag=` | 删除 ChatGPT 会话 |

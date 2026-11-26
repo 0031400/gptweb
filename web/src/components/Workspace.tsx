@@ -7,15 +7,12 @@ import {
   type ConversationSummary,
   type Me,
   type Message,
-  type TokenStatus,
 } from '../api'
 import ChatPanel from './ChatPanel'
 import Sidebar from './Sidebar'
 import { cx } from '../utils'
 
 export default function Workspace({ me, onLogout }: { me: Me; onLogout: () => void }) {
-  const [tokens, setTokens] = useState<TokenStatus[]>([])
-  const [tokenError, setTokenError] = useState('')
   const [tag, setTag] = useState(() => {
     const saved = window.localStorage.getItem('gptweb.tag')
     return saved && me.token_tags.includes(saved) ? saved : (me.token_tags[0] ?? '')
@@ -45,24 +42,6 @@ export default function Workspace({ me, onLogout }: { me: Me; onLogout: () => vo
   useEffect(() => {
     document.title = chat?.title ? `${chat.title} · GptWeb` : 'GptWeb'
   }, [chat?.title])
-
-  const loadTokens = useCallback(async () => {
-    try {
-      const data = await api<{ tokens: TokenStatus[] }>('/api/tokens')
-      setTokens(data.tokens)
-      setTokenError('')
-      setTag((current) => {
-        if (current && data.tokens.some((token) => token.tag === current)) return current
-        return data.tokens[0]?.tag ?? ''
-      })
-    } catch (err) {
-      setTokenError(err instanceof Error ? err.message : '读取账号列表失败')
-    }
-  }, [])
-
-  useEffect(() => {
-    void loadTokens()
-  }, [loadTokens])
 
   const loadConversations = useCallback(
     async (offset: number, replace: boolean) => {
@@ -115,7 +94,6 @@ export default function Workspace({ me, onLogout }: { me: Me; onLogout: () => vo
     void loadConversations(0, true)
   }, [tag, loadConversations])
 
-  const activeToken = tokens.find((token) => token.tag === tag)
   const filteredConversations = useMemo(() => {
     const keyword = search.trim().toLowerCase()
     if (!keyword) return conversations
@@ -163,7 +141,7 @@ export default function Workspace({ me, onLogout }: { me: Me; onLogout: () => vo
   }
 
   const sendMessage = (text: string, attachments: Attachment[] = []): boolean => {
-    if (streaming || !tag || !activeToken?.ready) return false
+    if (streaming || !tag) return false
     const content = text.trim()
     if (!content && attachments.length === 0) return false
     const userId = `local-${Date.now()}`
@@ -264,22 +242,15 @@ export default function Workspace({ me, onLogout }: { me: Me; onLogout: () => vo
   const dismissErrors = () => {
     setError('')
     setListError('')
-    setTokenError('')
   }
 
-  const disabledReason = !tag
-    ? '还没有可用的 ChatGPT 账号，请联系管理员分配 token'
-    : !activeToken
-      ? '正在加载账号信息…'
-      : !activeToken.ready
-        ? activeToken.error || '当前账号未就绪，请先更新 session 文件'
-        : ''
+  const disabledReason = !tag ? '还没有可用的 ChatGPT 账号，请联系管理员分配 token' : ''
 
   return (
     <div className="workspace">
       <Sidebar
         username={me.username}
-        tokens={tokens}
+        tokens={me.token_tags}
         tag={tag}
         onTagChange={setTag}
         conversations={filteredConversations}
@@ -292,10 +263,7 @@ export default function Workspace({ me, onLogout }: { me: Me; onLogout: () => vo
         onNew={newChat}
         onDelete={setConfirmItem}
         onLoadMore={() => void loadConversations(conversations.length, false)}
-        onRefresh={() => {
-          void loadTokens()
-          void loadConversations(0, true)
-        }}
+        onRefresh={() => void loadConversations(0, true)}
         onLogout={onLogout}
         open={sidebarOpen}
         onClose={() => setSidebarOpen(false)}
@@ -309,7 +277,7 @@ export default function Workspace({ me, onLogout }: { me: Me; onLogout: () => vo
         messages={messages}
         streaming={streaming}
         loading={loadingChat}
-        error={error || listError || tokenError}
+        error={error || listError}
         onDismissError={dismissErrors}
         onSend={sendMessage}
         onStop={stopStreaming}

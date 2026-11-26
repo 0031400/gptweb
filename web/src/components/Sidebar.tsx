@@ -1,11 +1,11 @@
 import { useMemo } from 'react'
-import type { ConversationSummary, TokenStatus } from '../api'
-import { cx, initials, planLabel } from '../utils'
+import type { ConversationSummary } from '../api'
+import { cx, initials } from '../utils'
 import { IconClose, IconLogout, IconPlus, IconRefresh, IconSearch, IconTrash } from './Icons'
 
 type Props = {
   username: string
-  tokens: TokenStatus[]
+  tokens: string[]
   tag: string
   onTagChange: (tag: string) => void
   conversations: ConversationSummary[]
@@ -55,7 +55,6 @@ function groupConversations(items: ConversationSummary[]): Group[] {
 }
 
 export default function Sidebar(props: Props) {
-  const active = props.tokens.find((token) => token.tag === props.tag)
   const hasMore = props.conversations.length < props.total
   const groups = useMemo(() => groupConversations(props.conversations), [props.conversations])
 
@@ -132,7 +131,7 @@ export default function Sidebar(props: Props) {
 
       <div className="sidebar-foot">
         <div className="token-line">
-          <span className={cx('status-dot', active?.ready ? 'ok' : 'bad')} />
+          <span className="token-caption">账号</span>
           <div className="token-select-wrap">
             <select
               value={props.tag}
@@ -140,21 +139,14 @@ export default function Sidebar(props: Props) {
               aria-label="选择 ChatGPT 账号"
             >
               {props.tokens.length === 0 && <option value="">未分配账号</option>}
-              {props.tokens.map((token) => (
-                <option key={token.tag} value={token.tag}>
-                  {token.name}
-                  {token.ready ? '' : '（未就绪）'}
+              {props.tokens.map((tag) => (
+                <option key={tag} value={tag}>
+                  {tag}
                 </option>
               ))}
             </select>
           </div>
         </div>
-        <div className="token-meta">
-          {active
-            ? [active.email || active.name, planLabel(active.plan)].filter(Boolean).join(' · ')
-            : '请联系管理员分配账号'}
-        </div>
-        {active?.error && <div className="token-error">{active.error}</div>}
         <div className="user-line">
           <span className="avatar">{initials(props.username)}</span>
           <span className="user-name">{props.username}</span>

@@ -1,17 +1,3 @@
-export function planLabel(plan?: string): string {
-  if (!plan) return ''
-  const map: Record<string, string> = {
-    free: '免费版',
-    plus: 'Plus',
-    pro: 'Pro',
-    team: 'Team',
-    business: 'Business',
-    enterprise: 'Enterprise',
-    edu: 'Edu',
-  }
-  return map[plan.toLowerCase()] ?? plan
-}
-
 export function initials(value: string): string {
   const trimmed = value.trim()
   if (!trimmed) return '?'

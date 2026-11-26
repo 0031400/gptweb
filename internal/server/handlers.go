@@ -74,19 +74,6 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *Server) handleTokens(w http.ResponseWriter, r *http.Request) {
-	user, _ := userFrom(r.Context())
-	items := make([]chatgpt.Status, 0, len(user.TokenTags))
-	for _, tag := range user.TokenTags {
-		client, ok := s.clients[tag]
-		if !ok {
-			continue
-		}
-		items = append(items, client.Status())
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"tokens": items})
-}
-
 func (s *Server) resolveClient(w http.ResponseWriter, r *http.Request, tag string) (*chatgpt.Client, bool) {
 	user, _ := userFrom(r.Context())
 	tag = strings.TrimSpace(tag)

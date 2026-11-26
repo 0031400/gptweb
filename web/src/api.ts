@@ -3,17 +3,6 @@ export type Me = {
   token_tags: string[]
 }
 
-export type TokenStatus = {
-  tag: string
-  name: string
-  email?: string
-  plan?: string
-  expires_at?: number
-  updated_at?: string
-  ready: boolean
-  error?: string
-}
-
 export type ConversationSummary = {
   id: string
   title: string
