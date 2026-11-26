@@ -94,7 +94,7 @@ session 文件的格式就是 `https://chatgpt.com/api/auth/session` 的返回�
 }
 ```
 
-必填只有 `accessToken`；`account.id`、`user.email`、套餐和过期时间会自动读取，缺失时也会从 JWT 里解析。旧版的 snake_case 格式仍然兼容。`cookies` 是可选项，通常不需要——后端使用浏览器 TLS 指纹访问 ChatGPT。
+必填只有 `accessToken`；`account.id`、`user.email`、套餐和过期时间会自动读取，缺失时也会从 JWT 里解析。文件必须是这个原始格式，不接受自定义的 snake_case 字段。
 
 获取方法：登录 `chatgpt.com`，按 F12 打开控制台执行：
 

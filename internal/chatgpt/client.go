@@ -108,9 +108,6 @@ func (c *Client) loadFromDisk() {
 		return
 	}
 	c.session = s
-	if did := s.Cookies["oai-did"]; did != "" {
-		c.deviceID = did
-	}
 	if info, err := os.Stat(c.opts.SessionFile); err == nil {
 		c.sessionMod = info.ModTime()
 	}
@@ -169,9 +166,6 @@ func (c *Client) applyHeaders(req *fhttp.Request, s *Session, path string) {
 	if s.AccountID != "" {
 		req.Header.Set("ChatGPT-Account-ID", s.AccountID)
 	}
-	if s.Build != "" {
-		req.Header.Set("OAI-Client-Build-Number", s.Build)
-	}
 	req.Header.Set("X-OAI-MCP-Form-Version", "2")
 	req.Header.Set("Sec-Fetch-Dest", "empty")
 	req.Header.Set("Sec-Fetch-Mode", "cors")
@@ -180,13 +174,6 @@ func (c *Client) applyHeaders(req *fhttp.Request, s *Session, path string) {
 		target := strings.Split(path, "?")[0]
 		req.Header.Set("X-OpenAI-Target-Path", target)
 		req.Header.Set("X-OpenAI-Target-Route", target)
-	}
-	if len(s.Cookies) > 0 {
-		parts := make([]string, 0, len(s.Cookies))
-		for k, v := range s.Cookies {
-			parts = append(parts, k+"="+v)
-		}
-		req.Header.Set("Cookie", strings.Join(parts, "; "))
 	}
 }
 
@@ -688,7 +675,7 @@ func (c *Client) SendMessage(ctx context.Context, conversationID, parentID, text
 		return SendResult{}, errors.New("无法定位会话最后一条消息，请刷新会话后重试")
 	}
 
-	pToken, cfg := (POW{}).BuildPToken(upstreamUA, s.Build)
+	pToken, cfg := (POW{}).BuildPToken(upstreamUA, defaultBuild)
 	sentinel, proof, err := c.chatRequirements(ctx, s, pToken, cfg)
 	if err != nil {
 		return SendResult{}, err
@@ -902,7 +889,7 @@ func (c *Client) chatRequirements(ctx context.Context, s *Session, pToken string
 	}
 	proof := ""
 	if prepare.ProofOfWork != nil && prepare.ProofOfWork.Required {
-		proof, err = (POW{}).BuildProofToken(config, prepare.ProofOfWork.Seed, prepare.ProofOfWork.Difficulty, upstreamUA, s.Build)
+		proof, err = (POW{}).BuildProofToken(config, prepare.ProofOfWork.Seed, prepare.ProofOfWork.Difficulty, upstreamUA, defaultBuild)
 		if err != nil {
 			return "", "", err
 		}

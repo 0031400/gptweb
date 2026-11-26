@@ -23,14 +23,6 @@ func main() {
 	if err != nil {
 		log.Fatalf("加载配置失败: %v", err)
 	}
-	if cfg.SessionSecret == "change-me-to-a-long-random-string" || len(cfg.SessionSecret) < 16 {
-		log.Printf("警告：session_secret 仍为默认值或过短，部署前请修改")
-	}
-	for _, user := range cfg.Users {
-		if user.Password == "admin123" {
-			log.Printf("警告：用户 %s 仍在使用默认密码 admin123，请修改 config.json", user.Username)
-		}
-	}
 	app, err := server.New(cfg)
 	if err != nil {
 		log.Fatalf("启动失败: %v", err)

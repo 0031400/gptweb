@@ -5,44 +5,31 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 )
 
-// Session 是一个 ChatGPT 登录态。它会被单独写入 session_file，
-// 配置文件只保存这个文件的路径。
+// Session 是一个 ChatGPT 登录态，仅供内部使用。
+// 文件内容必须是 https://chatgpt.com/api/auth/session 的原始响应。
 type Session struct {
-	AccessToken string            `json:"access_token"`
-	AccountID   string            `json:"account_id,omitempty"`
-	Cookies     map[string]string `json:"cookies,omitempty"`
-	Build       string            `json:"build,omitempty"`
-	Email       string            `json:"email,omitempty"`
-	Plan        string            `json:"plan,omitempty"`
-	ExpiresAt   int64             `json:"expires_at,omitempty"`
-	UpdatedAt   time.Time         `json:"updated_at"`
+	AccessToken string
+	AccountID   string
+	Email       string
+	Plan        string
+	ExpiresAt   int64
+	UpdatedAt   time.Time
 }
 
-// sessionWire 同时兼容 ChatGPT /api/auth/session 的原始响应和旧版 snake_case 文件。
-// 原始响应可以直接整段复制到 session_file 里。
 type sessionWire struct {
-	AccessToken       string            `json:"accessToken"`
-	AccessTokenLegacy string            `json:"access_token"`
-	Expires           string            `json:"expires"`
-	ExpiresAt         int64             `json:"expires_at"`
-	Cookies           map[string]string `json:"cookies"`
-	Build             string            `json:"build"`
-	Email             string            `json:"email"`
-	Plan              string            `json:"plan"`
-	AccountID         string            `json:"account_id"`
-	User              struct {
+	AccessToken string `json:"accessToken"`
+	Expires     string `json:"expires"`
+	User        struct {
 		Email string `json:"email"`
 	} `json:"user"`
 	Account struct {
 		ID       string `json:"id"`
 		PlanType string `json:"planType"`
 	} `json:"account"`
-	SessionToken string `json:"sessionToken"`
 }
 
 func LoadSession(path string) (*Session, error) {
@@ -54,19 +41,16 @@ func LoadSession(path string) (*Session, error) {
 	if err := json.Unmarshal(data, &wire); err != nil {
 		return nil, fmt.Errorf("解析 session 文件 %s 失败: %w", path, err)
 	}
+	if wire.AccessToken == "" {
+		return nil, fmt.Errorf("session 文件 %s 不是 chatgpt.com/api/auth/session 的格式（缺少 accessToken）", path)
+	}
 	s := &Session{
-		AccessToken: firstNonEmpty(wire.AccessToken, wire.AccessTokenLegacy),
-		AccountID:   firstNonEmpty(wire.Account.ID, wire.AccountID),
-		Cookies:     wire.Cookies,
-		Build:       wire.Build,
-		Email:       firstNonEmpty(wire.User.Email, wire.Email),
-		Plan:        firstNonEmpty(wire.Account.PlanType, wire.Plan),
-		ExpiresAt:   wire.ExpiresAt,
+		AccessToken: wire.AccessToken,
+		AccountID:   wire.Account.ID,
+		Email:       wire.User.Email,
+		Plan:        wire.Account.PlanType,
 	}
-	if s.AccessToken == "" {
-		return nil, fmt.Errorf("session 文件 %s 里没有 accessToken", path)
-	}
-	if s.ExpiresAt == 0 && wire.Expires != "" {
+	if wire.Expires != "" {
 		if t, err := time.Parse(time.RFC3339, wire.Expires); err == nil {
 			s.ExpiresAt = t.Unix()
 		}
@@ -76,33 +60,6 @@ func LoadSession(path string) (*Session, error) {
 		s.UpdatedAt = info.ModTime().UTC()
 	}
 	return s, nil
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		if value != "" {
-			return value
-		}
-	}
-	return ""
-}
-
-func (s *Session) Save(path string) error {
-	if dir := filepath.Dir(path); dir != "" && dir != "." {
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			return err
-		}
-	}
-	s.UpdatedAt = time.Now()
-	data, err := json.MarshalIndent(s, "", "  ")
-	if err != nil {
-		return err
-	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
 }
 
 // Expired 判断 access token 是否已过期（留 60 秒余量）。
@@ -140,7 +97,6 @@ func (s *Session) fillFromToken() {
 		}
 	}
 	if exp := jwtExp(s.AccessToken); exp > 0 {
-		// JWT 里的 exp 才是权威值，避免 session 文件里手写的过期时间已经过时。
 		s.ExpiresAt = exp
 	}
 }
