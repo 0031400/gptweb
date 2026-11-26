@@ -22,12 +22,25 @@ export type ConversationSummary = {
   archived?: boolean
 }
 
+export type Attachment = {
+  id: string
+  library_file_id?: string
+  name: string
+  mime_type: string
+  size: number
+  width?: number
+  height?: number
+  kind: 'image' | 'file'
+  previewUrl?: string
+}
+
 export type Message = {
   id: string
   role: 'user' | 'assistant'
   text: string
   create_time?: number
   streaming?: boolean
+  attachments?: Attachment[]
 }
 
 export type Conversation = {
@@ -81,6 +94,37 @@ export type ChatRequest = {
   conversation_id?: string
   parent_message_id?: string
   message: string
+  attachments?: Attachment[]
+}
+
+export async function uploadFile(tag: string, file: File): Promise<Attachment> {
+  const form = new FormData()
+  form.append('tag', tag)
+  form.append('file', file)
+  const response = await fetch('/api/upload', { method: 'POST', credentials: 'include', body: form })
+  if (!response.ok) {
+    let message = `上传失败（HTTP ${response.status}）`
+    try {
+      const data = (await response.json()) as { error?: string }
+      if (data.error) message = data.error
+    } catch {
+      // ignore
+    }
+    if (response.status === 401) {
+      window.dispatchEvent(new Event('gptweb:unauthorized'))
+    }
+    throw new ApiError(response.status, message)
+  }
+  return (await response.json()) as Attachment
+}
+
+export function fileURL(attachment: Attachment, tag: string, conversationId?: string): string {
+  const params = new URLSearchParams()
+  params.set('tag', tag)
+  if (conversationId) params.set('conversation_id', conversationId)
+  if (attachment.name) params.set('name', attachment.name)
+  if (attachment.kind) params.set('kind', attachment.kind)
+  return `/api/files/${encodeURIComponent(attachment.id)}?${params.toString()}`
 }
 
 export type ChatHandlers = {

@@ -87,3 +87,30 @@ export function IconStop({ size = 15 }: IconProps) {
     </svg>
   )
 }
+
+export function IconPaperclip({ size = 18 }: IconProps) {
+  return (
+    <svg {...base(size)}>
+      <path d="M21.4 11.6 12.6 20.4a6 6 0 0 1-8.5-8.5l9.2-9.2a4 4 0 1 1 5.7 5.7l-9.2 9.2a2 2 0 1 1-2.8-2.8l8.5-8.5" />
+    </svg>
+  )
+}
+
+export function IconFile({ size = 18 }: IconProps) {
+  return (
+    <svg {...base(size)}>
+      <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" />
+      <path d="M14 3v5h5M9 13h6M9 17h4" />
+    </svg>
+  )
+}
+
+export function IconImage({ size = 18 }: IconProps) {
+  return (
+    <svg {...base(size)}>
+      <rect x="3" y="4" width="18" height="16" rx="3" />
+      <circle cx="8.5" cy="9.5" r="1.5" />
+      <path d="m21 16-4.5-4.5L9 19" />
+    </svg>
+  )
+}

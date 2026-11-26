@@ -23,17 +23,68 @@ type Session struct {
 	UpdatedAt   time.Time         `json:"updated_at"`
 }
 
+// sessionWire 同时兼容 ChatGPT /api/auth/session 的原始响应和旧版 snake_case 文件。
+// 原始响应可以直接整段复制到 session_file 里。
+type sessionWire struct {
+	AccessToken       string            `json:"accessToken"`
+	AccessTokenLegacy string            `json:"access_token"`
+	Expires           string            `json:"expires"`
+	ExpiresAt         int64             `json:"expires_at"`
+	Cookies           map[string]string `json:"cookies"`
+	Build             string            `json:"build"`
+	Email             string            `json:"email"`
+	Plan              string            `json:"plan"`
+	AccountID         string            `json:"account_id"`
+	User              struct {
+		Email string `json:"email"`
+	} `json:"user"`
+	Account struct {
+		ID       string `json:"id"`
+		PlanType string `json:"planType"`
+	} `json:"account"`
+	SessionToken string `json:"sessionToken"`
+}
+
 func LoadSession(path string) (*Session, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
-	var s Session
-	if err := json.Unmarshal(data, &s); err != nil {
+	var wire sessionWire
+	if err := json.Unmarshal(data, &wire); err != nil {
 		return nil, fmt.Errorf("解析 session 文件 %s 失败: %w", path, err)
 	}
+	s := &Session{
+		AccessToken: firstNonEmpty(wire.AccessToken, wire.AccessTokenLegacy),
+		AccountID:   firstNonEmpty(wire.Account.ID, wire.AccountID),
+		Cookies:     wire.Cookies,
+		Build:       wire.Build,
+		Email:       firstNonEmpty(wire.User.Email, wire.Email),
+		Plan:        firstNonEmpty(wire.Account.PlanType, wire.Plan),
+		ExpiresAt:   wire.ExpiresAt,
+	}
+	if s.AccessToken == "" {
+		return nil, fmt.Errorf("session 文件 %s 里没有 accessToken", path)
+	}
+	if s.ExpiresAt == 0 && wire.Expires != "" {
+		if t, err := time.Parse(time.RFC3339, wire.Expires); err == nil {
+			s.ExpiresAt = t.Unix()
+		}
+	}
 	s.fillFromToken()
-	return &s, nil
+	if info, err := os.Stat(path); err == nil {
+		s.UpdatedAt = info.ModTime().UTC()
+	}
+	return s, nil
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func (s *Session) Save(path string) error {

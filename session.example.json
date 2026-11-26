@@ -1,12 +1,19 @@
 {
-  "access_token": "在这里填入 ChatGPT 的 accessToken（eyJ...）",
-  "account_id": "18bb1260-83ea-4f52-aea7-bd93683eeca3",
-  "cookies": {
-    "cf_clearance": "可选，通常不需要"
+  "user": {
+    "id": "user-xxxxxxxxxxxxxxxx",
+    "name": "你的名字",
+    "email": "you@example.com",
+    "image": "https://example.com/avatar.png",
+    "pwd_auth_time": 0,
+    "phone_number": null
   },
-  "build": "可选，chatgpt.com 页面 html 上的 data-build",
-  "email": "you@example.com",
-  "plan": "free",
-  "expires_at": 0,
-  "updated_at": "2026-01-01T00:00:00Z"
+  "expires": "2027-02-23T16:18:03.327Z",
+  "accessToken": "eyJhbGciOi...",
+  "authProvider": "google",
+  "rumViewTags": {},
+  "account": {
+    "id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+    "planType": "free"
+  },
+  "sessionToken": "eyJhbGciOi..."
 }

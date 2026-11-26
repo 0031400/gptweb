@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -310,10 +311,11 @@ func displayTitle(title string) string {
 // ---------------- conversation detail ----------------
 
 type Message struct {
-	ID         string  `json:"id"`
-	Role       string  `json:"role"`
-	Text       string  `json:"text"`
-	CreateTime float64 `json:"create_time,omitempty"`
+	ID          string       `json:"id"`
+	Role        string       `json:"role"`
+	Text        string       `json:"text"`
+	CreateTime  float64      `json:"create_time,omitempty"`
+	Attachments []Attachment `json:"attachments,omitempty"`
 }
 
 type Conversation struct {
@@ -443,12 +445,166 @@ func normalizeMessage(m map[string]any) (Message, bool) {
 		return Message{}, false
 	}
 	content, _ := m["content"].(map[string]any)
-	text := contentText(content)
-	if strings.TrimSpace(text) == "" {
+	text := cleanAssistantText(contentText(content))
+	attachments := messageAttachments(content, metadata)
+	if strings.TrimSpace(text) == "" && len(attachments) == 0 {
 		return Message{}, false
 	}
 	id, _ := m["id"].(string)
-	return Message{ID: id, Role: role, Text: text, CreateTime: messageCreateTime(m)}, true
+	return Message{ID: id, Role: role, Text: text, CreateTime: messageCreateTime(m), Attachments: attachments}, true
+}
+
+func messageAttachments(content, metadata map[string]any) []Attachment {
+	var result []Attachment
+	indexByID := map[string]int{}
+	addOrMerge := func(item Attachment) {
+		if item.ID == "" {
+			return
+		}
+		if index, ok := indexByID[item.ID]; ok {
+			mergeAttachment(&result[index], item)
+			return
+		}
+		indexByID[item.ID] = len(result)
+		result = append(result, item)
+	}
+
+	if parts, ok := content["parts"].([]any); ok {
+		for _, raw := range parts {
+			part, ok := raw.(map[string]any)
+			if !ok || part["content_type"] != "image_asset_pointer" {
+				continue
+			}
+			pointer, _ := part["asset_pointer"].(string)
+			id := attachmentIDFromPointer(pointer)
+			if id == "" {
+				continue
+			}
+			addOrMerge(Attachment{
+				ID:     id,
+				Kind:   "image",
+				Width:  intValue(part["width"]),
+				Height: intValue(part["height"]),
+				Size:   int64Value(part["size_bytes"]),
+			})
+		}
+	}
+
+	if list, ok := metadata["attachments"].([]any); ok {
+		for _, raw := range list {
+			item, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+			id, _ := item["id"].(string)
+			id = attachmentIDFromPointer(id)
+			if id == "" {
+				continue
+			}
+			attachment := Attachment{
+				ID:            id,
+				LibraryFileID: stringValue(item["library_file_id"]),
+				Name:          stringValue(item["name"]),
+				MimeType:      stringValue(item["mime_type"]),
+				Size:          int64Value(item["size"]),
+				Width:         intValue(item["width"]),
+				Height:        intValue(item["height"]),
+			}
+			attachment.Kind = kindForMime(attachment.MimeType)
+			if attachment.Kind == "" && attachment.Width > 0 {
+				attachment.Kind = "image"
+			}
+			addOrMerge(attachment)
+		}
+	}
+	return result
+}
+
+func mergeAttachment(dst *Attachment, src Attachment) {
+	if src.LibraryFileID != "" {
+		dst.LibraryFileID = src.LibraryFileID
+	}
+	if src.Name != "" {
+		dst.Name = src.Name
+	}
+	if src.MimeType != "" {
+		dst.MimeType = src.MimeType
+	}
+	if src.Size > 0 {
+		dst.Size = src.Size
+	}
+	if src.Width > 0 {
+		dst.Width = src.Width
+	}
+	if src.Height > 0 {
+		dst.Height = src.Height
+	}
+	if src.Kind != "" {
+		dst.Kind = src.Kind
+	}
+	if dst.Kind == "" {
+		dst.Kind = "file"
+	}
+}
+
+func attachmentIDFromPointer(value string) string {
+	value = strings.TrimSpace(value)
+	value = strings.TrimPrefix(value, "sediment://")
+	value = strings.TrimPrefix(value, "file-service://")
+	return value
+}
+
+func kindForMime(mimeType string) string {
+	if strings.HasPrefix(strings.ToLower(mimeType), "image/") {
+		return "image"
+	}
+	if mimeType != "" {
+		return "file"
+	}
+	return ""
+}
+
+func stringValue(value any) string {
+	if text, ok := value.(string); ok {
+		return text
+	}
+	return ""
+}
+
+func intValue(value any) int {
+	switch v := value.(type) {
+	case float64:
+		return int(v)
+	case json.Number:
+		n, _ := v.Int64()
+		return int(n)
+	case int:
+		return v
+	}
+	return 0
+}
+
+func int64Value(value any) int64 {
+	switch v := value.(type) {
+	case float64:
+		return int64(v)
+	case json.Number:
+		n, _ := v.Int64()
+		return n
+	case int64:
+		return v
+	case int:
+		return int64(v)
+	}
+	return 0
+}
+
+var fileCitePattern = regexp.MustCompile(`<FileCite[^>]*/>`)
+
+// cleanAssistantText 去掉模型输出里的文件引用标记，避免前端直接看到私有标记。
+func cleanAssistantText(value string) string {
+	value = fileCitePattern.ReplaceAllString(value, "")
+	return strings.TrimSpace(value)
 }
 
 func contentText(content map[string]any) string {
@@ -509,9 +665,9 @@ type SendResult struct {
 	Text           string `json:"text"`
 }
 
-func (c *Client) SendMessage(ctx context.Context, conversationID, parentID, text string, onDelta func(string) error) (SendResult, error) {
+func (c *Client) SendMessage(ctx context.Context, conversationID, parentID, text string, attachments []Attachment, onDelta func(string) error) (SendResult, error) {
 	text = strings.TrimSpace(text)
-	if text == "" {
+	if text == "" && len(attachments) == 0 {
 		return SendResult{}, errors.New("消息不能为空")
 	}
 	s, err := c.sessionOrError(false)
@@ -539,13 +695,55 @@ func (c *Client) SendMessage(ctx context.Context, conversationID, parentID, text
 	}
 
 	messageID := uuid.NewString()
+	parts := make([]any, 0, len(attachments)+1)
+	metaAttachments := make([]any, 0, len(attachments))
+	hasImage := false
+	for _, attachment := range attachments {
+		if attachment.ID == "" {
+			continue
+		}
+		meta := map[string]any{
+			"id":        attachment.ID,
+			"name":      attachment.Name,
+			"size":      attachment.Size,
+			"mime_type": attachment.MimeType,
+			"source":    "local",
+		}
+		if attachment.LibraryFileID != "" {
+			meta["library_file_id"] = attachment.LibraryFileID
+		}
+		if attachment.IsImage() {
+			hasImage = true
+			parts = append(parts, map[string]any{
+				"content_type":  "image_asset_pointer",
+				"asset_pointer": "sediment://" + attachment.ID,
+				"width":         attachment.Width,
+				"height":        attachment.Height,
+				"size_bytes":    attachment.Size,
+			})
+			meta["width"] = attachment.Width
+			meta["height"] = attachment.Height
+		}
+		metaAttachments = append(metaAttachments, meta)
+	}
+	if text != "" || !hasImage {
+		parts = append(parts, text)
+	}
+	contentType := "text"
+	if hasImage {
+		contentType = "multimodal_text"
+	}
+	messageMetadata := map[string]any{
+		"automation_creation_attribution": map[string]any{"origin": "conversation", "flow_id": messageID},
+	}
+	if len(metaAttachments) > 0 {
+		messageMetadata["attachments"] = metaAttachments
+	}
 	message := map[string]any{
-		"id":     messageID,
-		"author": map[string]any{"role": "user"},
-		"content": map[string]any{
-			"content_type": "text",
-			"parts":        []any{text},
-		},
+		"id":       messageID,
+		"author":   map[string]any{"role": "user"},
+		"content":  map[string]any{"content_type": contentType, "parts": parts},
+		"metadata": messageMetadata,
 	}
 	payload := map[string]any{
 		"turn_attribution":       map[string]any{"turn_trigger": "composer"},
@@ -565,14 +763,21 @@ func (c *Client) SendMessage(ctx context.Context, conversationID, parentID, text
 	if conversationID != "" {
 		payload["conversation_id"] = conversationID
 	}
+	traceID := uuid.NewString()
 	extra := map[string]string{
 		"Accept": "text/event-stream",
 		"OpenAI-Sentinel-Chat-Requirements-Token": sentinel,
 		"X-OAI-MCP-Form-Version":                  "2",
-		"X-OAI-Turn-Trace-Id":                     uuid.NewString(),
+		"X-OAI-Turn-Trace-Id":                     traceID,
 	}
 	if proof != "" {
 		extra["OpenAI-Sentinel-Proof-Token"] = proof
+	}
+	if len(metaAttachments) > 0 {
+		// prepare 不是发送成功的硬性条件，失败时仍然尝试正式发送。
+		if conduit, prepareErr := c.prepareTurn(ctx, s, conversationID, parentID, attachments, traceID); prepareErr == nil && conduit != "" {
+			extra["X-Conduit-Token"] = conduit
+		}
 	}
 	resp, err := c.request(ctx, s, fhttp.MethodPost, "/backend-api/f/conversation", payload, extra)
 	if err != nil {
@@ -587,7 +792,7 @@ func (c *Client) SendMessage(ctx context.Context, conversationID, parentID, text
 	if convID == "" {
 		convID = conversationID
 	}
-	result := SendResult{ConversationID: convID, MessageID: msgID, Text: full}
+	result := SendResult{ConversationID: convID, MessageID: msgID, Text: cleanAssistantText(full)}
 	if err == nil && full == "" && convID != "" {
 		// 有些响应只给事件补丁，没给出完整文本；回头读一次会话兜底。
 		if conv, getErr := c.GetConversation(ctx, convID); getErr == nil {
@@ -607,6 +812,64 @@ func (c *Client) SendMessage(ctx context.Context, conversationID, parentID, text
 		return result, err
 	}
 	return result, nil
+}
+
+func (c *Client) prepareTurn(ctx context.Context, s *Session, conversationID, parentID string, attachments []Attachment, traceID string) (string, error) {
+	body := map[string]any{
+		"client_prepare_state":    "sent",
+		"action":                  "next",
+		"model":                   upstreamModel,
+		"parent_message_id":       parentID,
+		"timezone":                "Asia/Shanghai",
+		"timezone_offset_min":     -480,
+		"is_do_not_remember":      false,
+		"local_function_names":    []string{"local.continue_in_work"},
+		"client_prepare_dispatch": "debounced",
+		"client_prepare_source":   "composer_editor_state",
+	}
+	if conversationID != "" {
+		body["conversation_id"] = conversationID
+	}
+	var mimeTypes []string
+	var imageIDs []string
+	seenMime := map[string]bool{}
+	for _, attachment := range attachments {
+		if attachment.MimeType != "" && !seenMime[attachment.MimeType] {
+			seenMime[attachment.MimeType] = true
+			mimeTypes = append(mimeTypes, attachment.MimeType)
+		}
+		// prepare 接口对图片 ID 数量有限制，超过两个容易 422；正式消息里仍会带全部附件。
+		if attachment.IsImage() && attachment.ID != "" && len(imageIDs) < 2 {
+			imageIDs = append(imageIDs, attachment.ID)
+		}
+	}
+	if len(mimeTypes) > 0 {
+		body["attachment_mime_types"] = mimeTypes
+	}
+	if len(imageIDs) > 0 {
+		body["prepare_image_upload_ids"] = imageIDs
+	}
+	resp, err := c.request(ctx, s, fhttp.MethodPost, "/backend-api/f/conversation/prepare", body, map[string]string{
+		"X-OAI-Turn-Trace-Id":    traceID,
+		"X-OAI-MCP-Form-Version": "2",
+	})
+	if err != nil {
+		return "", err
+	}
+	if resp.StatusCode != fhttp.StatusOK {
+		return "", readError(resp, "准备附件消息")
+	}
+	defer resp.Body.Close()
+	var result struct {
+		ConduitToken *string `json:"conduit_token"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", err
+	}
+	if result.ConduitToken == nil {
+		return "", nil
+	}
+	return *result.ConduitToken, nil
 }
 
 func (c *Client) chatRequirements(ctx context.Context, s *Session, pToken string, config []any) (string, string, error) {

@@ -75,43 +75,46 @@ yarn dev
 
 ## session 文件
 
-最小结构（详见 [session.example.json](session.example.json)）：
+session 文件的格式就是 `https://chatgpt.com/api/auth/session` 的返回内容，**原样整段复制**进来即可（详见 [session.example.json](session.example.json)）：
 
 ```json
 {
-  "access_token": "eyJhbGciOi...",
-  "account_id": "18bb1260-83ea-4f52-aea7-bd93683eeca3",
-  "cookies": { "cf_clearance": "可选" },
-  "build": "可选",
-  "email": "you@example.com",
-  "plan": "free"
+  "user": {
+    "id": "user-xxxxxxxxxxxxxxxx",
+    "name": "你的名字",
+    "email": "you@example.com"
+  },
+  "expires": "2027-02-23T16:18:03.327Z",
+  "accessToken": "eyJhbGciOi...",
+  "authProvider": "google",
+  "account": {
+    "id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+    "planType": "free"
+  }
 }
 ```
 
-只有 `access_token` 是必填的。`account_id`、邮箱、套餐和过期时间会自动从 JWT 里解析；`cookies` 通常也不需要，后端使用浏览器 TLS 指纹访问 ChatGPT。
+必填只有 `accessToken`；`account.id`、`user.email`、套餐和过期时间会自动读取，缺失时也会从 JWT 里解析。旧版的 snake_case 格式仍然兼容。`cookies` 是可选项，通常不需要——后端使用浏览器 TLS 指纹访问 ChatGPT。
 
-获取 `access_token`：在已登录的浏览器里打开 `chatgpt.com`，按 F12 打开控制台执行：
+获取方法：登录 `chatgpt.com`，按 F12 打开控制台执行：
 
 ```js
-fetch('/api/auth/session').then(r => r.json()).then(s => console.log(JSON.stringify({
-  access_token: s.accessToken,
-  account_id: s.account?.id,
-  email: s.user?.email,
-  plan: s.account?.planType
-}, null, 2)))
+fetch('/api/auth/session').then(r => r.json()).then(s => console.log(JSON.stringify(s, null, 2)))
 ```
 
-access token 通常有效期约 10 天。过期后直接替换 session 文件里的 `access_token` 即可，服务端会检测文件修改时间并自动重新读取，不需要重启。
+把控制台输出的完整 JSON 保存为 `sessions/xxx.json` 即可。access token 通常有效期约 10 天；过期后替换文件里的 `accessToken`，服务端会检测文件修改时间并自动重新读取，不需要重启。
 
 > session 文件等同于账号密码，请勿提交到仓库或发给别人。`sessions/` 已加入 `.gitignore`。
 
 ## 功能
 
 - 用户登录 / 退出，Cookie 会话，按 IP 限制连续登录失败次数。
-- 按用户授权展示可用的 ChatGPT 账号标签。
+- 按用户授权展示可用的 ChatGPT 账号标签，支持多个 session 文件。
 - 拉取 ChatGPT 会话列表，支持搜索、加载更多、删除。
-- 查看历史会话并继续对话。
+- 查看历史会话并继续对话，历史里的图片和文件附件会一并展示。
 - 新建会话、流式输出、停止生成、Markdown 渲染、代码块一键复制。
+- 支持图片和文件：点击回形针选择、拖拽到窗口、或直接粘贴图片；发送前可预览和移除。
+- 单文件最大 20MB，一次最多 8 个附件；历史会话里的图片可查看，文件可下载。
 - 模型固定使用 `auto`，由 ChatGPT 自动选择，不提供选择器。
 - 移动端侧栏抽屉。
 
@@ -128,7 +131,23 @@ access token 通常有效期约 10 天。过期后直接替换 session 文件里
 | GET | `/api/conversations?tag=&offset=&limit=` | 会话列表 |
 | GET | `/api/conversations/{id}?tag=` | 会话详情（已归一化为 user/assistant 消息） |
 | DELETE | `/api/conversations/{id}?tag=` | 删除 ChatGPT 会话 |
+| POST | `/api/upload` | 上传图片/文件，multipart 字段 `tag`、`file` |
+| GET | `/api/files/{id}?tag=` | 读取/下载 ChatGPT 文件，可带 `name`、`kind`、`conversation_id` |
 | POST | `/api/chat` | 发送消息，返回 SSE 流 |
+
+`POST /api/upload` 返回的附件对象可以直接放进聊天请求：
+
+```json
+{
+  "id": "file_00000000...",
+  "name": "test.png",
+  "mime_type": "image/png",
+  "size": 2367,
+  "width": 320,
+  "height": 180,
+  "kind": "image"
+}
+```
 
 `POST /api/chat` 请求体：
 
@@ -137,9 +156,22 @@ access token 通常有效期约 10 天。过期后直接替换 session 文件里
   "tag": "default",
   "conversation_id": "可选，新会话不传",
   "parent_message_id": "可选，续聊时传上一条消息 id",
-  "message": "你好"
+  "message": "这张图片里有什么？",
+  "attachments": [
+    {
+      "id": "file_00000000...",
+      "name": "test.png",
+      "mime_type": "image/png",
+      "size": 2367,
+      "width": 320,
+      "height": 180,
+      "kind": "image"
+    }
+  ]
 }
 ```
+
+只发附件、不写文字也可以（`message` 为空、`attachments` 非空）。
 
 返回的 SSE 事件：
 
@@ -176,7 +208,8 @@ gptweb/
 
 ## 已知限制
 
-- 只支持文本对话，暂不支持图片上传、语音、文件附件。
+- 支持图片和常见文档，不支持语音、视频和实时通话。
+- 单文件上限 20MB，一次最多 8 个附件。
 - 不支持编辑/重新生成消息。
 - 会话标题由 ChatGPT 生成，刚建的新会话可能短暂显示为「新对话」。
 - ChatGPT 网页接口和 PoW 算法随时可能调整；如果突然全部 403，需要重新对照网页端请求更新实现。

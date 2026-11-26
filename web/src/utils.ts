@@ -23,3 +23,15 @@ export function initials(value: string): string {
 export function cx(...values: Array<string | false | null | undefined>): string {
   return values.filter(Boolean).join(' ')
 }
+
+export function formatBytes(value: number): string {
+  if (!value) return ''
+  if (value < 1024) return `${value} B`
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(value < 10 * 1024 ? 1 : 0)} KB`
+  return `${(value / (1024 * 1024)).toFixed(1)} MB`
+}
+
+export function isImageFile(file: File): boolean {
+  if (file.type.startsWith('image/')) return true
+  return /\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(file.name)
+}

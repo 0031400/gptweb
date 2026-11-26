@@ -62,6 +62,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/conversations", s.handleListConversations)
 	s.mux.HandleFunc("GET /api/conversations/{id}", s.handleGetConversation)
 	s.mux.HandleFunc("DELETE /api/conversations/{id}", s.handleDeleteConversation)
+	s.mux.HandleFunc("POST /api/upload", s.handleUpload)
+	s.mux.HandleFunc("GET /api/files/{id}", s.handleFile)
 	s.mux.HandleFunc("POST /api/chat", s.handleChat)
 	s.mux.HandleFunc("/", s.serveStatic)
 }

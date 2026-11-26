@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   api,
   streamChat,
+  type Attachment,
   type Conversation,
   type ConversationSummary,
   type Me,
@@ -161,15 +162,15 @@ export default function Workspace({ me, onLogout }: { me: Me; onLogout: () => vo
     )
   }
 
-  const sendMessage = (text: string): boolean => {
+  const sendMessage = (text: string, attachments: Attachment[] = []): boolean => {
     if (streaming || !tag || !activeToken?.ready) return false
     const content = text.trim()
-    if (!content) return false
+    if (!content && attachments.length === 0) return false
     const userId = `local-${Date.now()}`
     const assistantId = `stream-${Date.now()}`
     setMessages((prev) => [
       ...prev,
-      { id: userId, role: 'user', text: content, create_time: Date.now() / 1000 },
+      { id: userId, role: 'user', text: content, create_time: Date.now() / 1000, attachments },
       { id: assistantId, role: 'assistant', text: '', streaming: true },
     ])
     setStreaming(true)
@@ -184,6 +185,7 @@ export default function Workspace({ me, onLogout }: { me: Me; onLogout: () => vo
         conversation_id: convId || undefined,
         parent_message_id: parentId || undefined,
         message: content,
+        attachments,
       },
       {
         onDelta: (delta) => {
@@ -302,6 +304,8 @@ export default function Workspace({ me, onLogout }: { me: Me; onLogout: () => vo
       <div className={cx('sidebar-scrim', sidebarOpen && 'show')} onClick={() => setSidebarOpen(false)} />
       <ChatPanel
         title={chat?.title || '新对话'}
+        tag={tag}
+        conversationId={convId}
         messages={messages}
         streaming={streaming}
         loading={loadingChat}
@@ -311,7 +315,7 @@ export default function Workspace({ me, onLogout }: { me: Me; onLogout: () => vo
         onStop={stopStreaming}
         onOpenSidebar={() => setSidebarOpen(true)}
         disabledReason={disabledReason}
-        conversationKey={convId || 'new'}
+        conversationKey={`${tag}:${convId || 'new'}`}
       />
       {confirmItem && (
         <div className="modal-backdrop" onClick={() => setConfirmItem(null)}>
