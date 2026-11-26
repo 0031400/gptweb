@@ -934,29 +934,34 @@ button {
   margin: 14px 0;
   border-radius: 12px;
   overflow: hidden;
-  background: #0d0d0d;
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: #f4f5f7;
+  border: 1px solid var(--border);
 }
 .code-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: 7px 12px;
-  background: #1a1a1a;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-  color: #a3a3a3;
+  background: #eaecf0;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-dim);
   font-size: 11px;
 }
 .code-head button {
   border: none;
   background: transparent;
-  color: #a3a3a3;
+  color: var(--text-faint);
   font-size: 11px;
   padding: 2px 4px;
   border-radius: 4px;
 }
 .code-head button:hover {
-  color: #ffffff;
+  color: var(--text);
+}
+.code-block ::selection,
+.code-block::selection {
+  background: rgba(59, 130, 246, 0.3);
+  color: #0b1220;
 }
 .code-scroll {
   overflow-x: auto;
@@ -970,7 +975,7 @@ button {
   padding: 0;
   border: none;
   background: none;
-  color: #f1f1f1;
+  color: #1f2328;
   font-size: 12.8px;
   line-height: 1.65;
   white-space: pre;
