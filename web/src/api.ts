@@ -75,6 +75,7 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
 export type ChatStreamEvent =
   | { type: 'start' }
   | { type: 'delta'; text: string }
+  | { type: 'replace'; text: string }
   | { type: 'done'; conversation_id: string; message_id?: string; text: string }
   | { type: 'error'; message: string }
 
@@ -118,6 +119,7 @@ export function fileURL(attachment: Attachment, tag: string, conversationId?: st
 
 export type ChatHandlers = {
   onDelta: (text: string) => void
+  onReplace: (text: string) => void
   onDone: (event: Extract<ChatStreamEvent, { type: 'done' }>) => void
   onError: (message: string) => void
 }
@@ -166,6 +168,7 @@ export async function streamChat(
         continue
       }
       if (event.type === 'delta') handlers.onDelta(event.text)
+      else if (event.type === 'replace') handlers.onReplace(event.text)
       else if (event.type === 'done') handlers.onDone(event)
       else if (event.type === 'error') handlers.onError(event.message)
     }

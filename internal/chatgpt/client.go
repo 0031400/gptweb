@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -372,9 +371,13 @@ func normalizeMessage(m map[string]any) (Message, bool) {
 		return Message{}, false
 	}
 	content, _ := m["content"].(map[string]any)
-	text := cleanAssistantText(contentText(content))
-	if fallback != "" {
-		text = cleanAssistantText(fallback)
+	text := ""
+	if role == "assistant" {
+		// 助手内容只使用 fallbackMarkdown；没有该字段时留空（附件仍保留）。
+		text = strings.TrimSpace(fallback)
+	} else {
+		// 用户消息没有 fallbackMarkdown，只能使用 content.parts。
+		text = contentText(content)
 	}
 	attachments := messageAttachments(content, metadata)
 	if strings.TrimSpace(text) == "" && len(attachments) == 0 {
@@ -529,28 +532,6 @@ func int64Value(value any) int64 {
 	return 0
 }
 
-var (
-	uiSelfClosingPattern = regexp.MustCompile(`<(?:icon|Cite|FileCite)\b[^>]*/>`)
-	uiContainerPattern   = regexp.MustCompile(`</?(?:badge|box|text|divider)\b[^>]*>`)
-)
-
-// cleanAssistantText 去掉模型输出里的引用标记和 ChatGPT 专属 UI 标签，
-// 保留容器标签内的文字，避免前端直接看到 `<badge>`、`<box>` 这类私有标记。
-func cleanAssistantText(value string) string {
-	value = uiSelfClosingPattern.ReplaceAllString(value, "")
-	value = uiContainerPattern.ReplaceAllString(value, "")
-	return strings.TrimSpace(value)
-}
-
-func hasUITags(value string) bool {
-	for _, tag := range []string{"<badge", "<box", "<text", "<divider", "<icon", "<Cite", "<FileCite"} {
-		if strings.Contains(value, tag) {
-			return true
-		}
-	}
-	return false
-}
-
 func fallbackMarkdown(metadata map[string]any) string {
 	dil, _ := metadata["model_dil_v2"].(map[string]any)
 	if dil == nil {
@@ -618,7 +599,7 @@ type SendResult struct {
 	Text           string `json:"text"`
 }
 
-func (c *Client) SendMessage(ctx context.Context, conversationID, parentID, text string, attachments []Attachment, onDelta func(string) error) (SendResult, error) {
+func (c *Client) SendMessage(ctx context.Context, conversationID, parentID, text string, attachments []Attachment, onDelta, onReplace func(string) error) (SendResult, error) {
 	text = strings.TrimSpace(text)
 	if text == "" && len(attachments) == 0 {
 		return SendResult{}, errors.New("消息不能为空")
@@ -741,14 +722,14 @@ func (c *Client) SendMessage(ctx context.Context, conversationID, parentID, text
 	}
 	defer resp.Body.Close()
 
-	convID, msgID, full, err := readConversationSSE(resp.Body, onDelta)
+	convID, msgID, full, err := readConversationSSE(resp.Body, onDelta, onReplace)
 	if convID == "" {
 		convID = conversationID
 	}
-	result := SendResult{ConversationID: convID, MessageID: msgID, Text: cleanAssistantText(full)}
-	if err == nil && convID != "" && (full == "" || hasUITags(full)) {
-		// 没有正文，或流里带了 ChatGPT 自定义 UI 标签时，回头读一次会话：
-		// 历史归一化会优先使用 metadata.model_dil_v2.fallbackMarkdown。
+	result := SendResult{ConversationID: convID, MessageID: msgID, Text: strings.TrimSpace(full)}
+	if err == nil && convID != "" && full == "" {
+		// 流里没有 fallbackMarkdown 时，回头读一次会话作为兜底；
+		// 历史归一化同样只使用 metadata.model_dil_v2.fallbackMarkdown。
 		if conv, getErr := c.GetConversation(ctx, convID); getErr == nil {
 			for i := len(conv.Messages) - 1; i >= 0; i-- {
 				if conv.Messages[i].Role == "assistant" {
@@ -888,12 +869,155 @@ func (c *Client) chatRequirements(ctx context.Context, s *Session, pToken string
 
 // ---------------- SSE ----------------
 
-func readConversationSSE(reader io.Reader, delta func(string) error) (string, string, string, error) {
+type fallbackSSEState struct {
+	currentID string
+	current   string
+	bestID    string
+	best      string
+	emitted   string
+	emittedID string
+}
+
+func (s *fallbackSSEState) update(value string, onDelta, onReplace func(string) error) error {
+	if value == "" {
+		return nil
+	}
+	s.current = value
+	s.best = value
+	s.bestID = s.currentID
+	if onDelta == nil && onReplace == nil {
+		return nil
+	}
+	if s.emittedID == "" {
+		s.emittedID = s.currentID
+	}
+	// 只对当前消息做增量输出；切换到新的助手消息时等 done 再整体替换。
+	if s.emittedID != s.currentID {
+		return nil
+	}
+	if value == s.emitted {
+		return nil
+	}
+	if strings.HasPrefix(value, s.emitted) {
+		next := value[len(s.emitted):]
+		s.emitted = value
+		if next != "" && onDelta != nil {
+			return onDelta(next)
+		}
+		return nil
+	}
+	// fallbackMarkdown 有时会用 replace 覆盖整段文本，无法用增量表达。
+	s.emitted = value
+	if onReplace != nil {
+		return onReplace(value)
+	}
+	return nil
+}
+
+func (s *fallbackSSEState) setMessage(message map[string]any, onDelta, onReplace func(string) error) error {
+	author, _ := message["author"].(map[string]any)
+	if author["role"] != "assistant" {
+		return nil
+	}
+	id, _ := message["id"].(string)
+	if id != "" && id != s.currentID {
+		s.currentID = id
+		s.current = ""
+	}
+	metadata, _ := message["metadata"].(map[string]any)
+	if value := fallbackMarkdown(metadata); value != "" {
+		return s.update(value, onDelta, onReplace)
+	}
+	return nil
+}
+
+func (s *fallbackSSEState) applyPatch(operation map[string]any, onDelta, onReplace func(string) error) error {
+	path, _ := operation["p"].(string)
+	action, _ := operation["o"].(string)
+	value, _ := operation["v"].(string)
+	switch path {
+	case "/message/metadata/model_dil_v2/fallbackMarkdown":
+		switch action {
+		case "append":
+			return s.update(s.current+value, onDelta, onReplace)
+		case "replace", "add":
+			if value != "" {
+				return s.update(value, onDelta, onReplace)
+			}
+		case "remove":
+			s.current = ""
+		}
+	case "/message/metadata":
+		if metadata, ok := operation["v"].(map[string]any); ok {
+			if fallback := fallbackMarkdown(metadata); fallback != "" {
+				return s.update(fallback, onDelta, onReplace)
+			}
+		}
+	case "/message/metadata/model_dil_v2":
+		if dil, ok := operation["v"].(map[string]any); ok {
+			if fallback, ok := dil["fallbackMarkdown"].(string); ok && fallback != "" {
+				return s.update(fallback, onDelta, onReplace)
+			}
+		}
+	}
+	return nil
+}
+
+func processFallbackEvent(event map[string]any, state *fallbackSSEState, onDelta, onReplace func(string) error) error {
+	if message, ok := event["message"].(map[string]any); ok {
+		if err := state.setMessage(message, onDelta, onReplace); err != nil {
+			return err
+		}
+	}
+	if nested, ok := event["v"].(map[string]any); ok {
+		if message, ok := nested["message"].(map[string]any); ok {
+			if err := state.setMessage(message, onDelta, onReplace); err != nil {
+				return err
+			}
+		}
+		if _, ok := nested["p"]; ok {
+			if err := state.applyPatch(nested, onDelta, onReplace); err != nil {
+				return err
+			}
+		}
+	}
+	if operations, ok := event["v"].([]any); ok {
+		for _, raw := range operations {
+			operation, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+			if value, ok := operation["v"].(map[string]any); ok {
+				if message, ok := value["message"].(map[string]any); ok {
+					if err := state.setMessage(message, onDelta, onReplace); err != nil {
+						return err
+					}
+				}
+			}
+			if _, ok := operation["p"]; ok {
+				if err := state.applyPatch(operation, onDelta, onReplace); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	if _, ok := event["p"]; ok {
+		if err := state.applyPatch(event, onDelta, onReplace); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// readConversationSSE 只从 fallbackMarkdown 读取助手正文。
+// 网页端把 fallbackMarkdown 放在 /message/metadata/model_dil_v2/fallbackMarkdown
+// 的 patch 操作里，append/replace 混合更新；这里维护状态并输出增量。
+func readConversationSSE(reader io.Reader, onDelta, onReplace func(string) error) (string, string, string, error) {
 	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 64*1024), 32*1024*1024)
-	conversationID, current, messageID := "", "", ""
-	started := false
+	conversationID := ""
 	upstreamError := ""
+	state := &fallbackSSEState{}
 	for scanner.Scan() {
 		line := scanner.Text()
 		if !strings.HasPrefix(line, "data:") {
@@ -922,89 +1046,24 @@ func readConversationSSE(reader io.Reader, delta func(string) error) (string, st
 				conversationID = id
 			}
 		}
-		text := current
-		message := assistantMessage(event)
-		if message != nil {
-			id, _ := message["id"].(string)
-			status, _ := message["status"].(string)
-			if !started && (message["end_turn"] == true || strings.HasPrefix(status, "finished")) {
-				continue
-			}
-			if messageID != "" && id != "" && id != messageID {
-				continue
-			}
-			started = true
-			if messageID == "" {
-				messageID = id
-			}
-			if content, ok := message["content"].(map[string]any); ok {
-				if value := contentText(content); value != "" {
-					text = value
-				}
-			}
-		} else if started {
-			text = applyConversationTextPatch(event, current)
-		} else {
-			continue
-		}
-		if text == current {
-			continue
-		}
-		next := text
-		if strings.HasPrefix(text, current) {
-			next = strings.TrimPrefix(text, current)
-		}
-		current = text
-		if next != "" && delta != nil {
-			if err := delta(next); err != nil {
-				return conversationID, messageID, current, err
-			}
+		if err := processFallbackEvent(event, state, onDelta, onReplace); err != nil {
+			return conversationID, state.bestID, state.best, err
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return conversationID, messageID, current, err
+		return conversationID, state.bestID, state.best, err
 	}
-	if current == "" && upstreamError != "" {
-		return conversationID, messageID, current, fmt.Errorf("ChatGPT 返回错误：%s", upstreamError)
+	text := state.best
+	if text == "" {
+		text = state.current
 	}
-	return conversationID, messageID, current, nil
-}
-
-func assistantMessage(event map[string]any) map[string]any {
-	candidates := []map[string]any{event}
-	if value, ok := event["v"].(map[string]any); ok {
-		candidates = append(candidates, value)
+	messageID := state.bestID
+	if messageID == "" {
+		messageID = state.currentID
 	}
-	for _, candidate := range candidates {
-		message, _ := candidate["message"].(map[string]any)
-		author, _ := message["author"].(map[string]any)
-		metadata, _ := message["metadata"].(map[string]any)
-		recipient, _ := message["recipient"].(string)
-		channel, _ := message["channel"].(string)
-		if author["role"] == "assistant" && (metadata["is_visually_hidden_from_conversation"] != true || channel == "final") && (recipient == "" || recipient == "all") && (channel == "" || channel == "final") {
-			return message
-		}
+	text = strings.TrimSpace(text)
+	if text == "" && upstreamError != "" {
+		return conversationID, messageID, text, fmt.Errorf("ChatGPT 返回错误：%s", upstreamError)
 	}
-	return nil
-}
-
-func applyConversationTextPatch(event map[string]any, current string) string {
-	if event["p"] == "/message/content/parts/0" {
-		value, _ := event["v"].(string)
-		if event["o"] == "replace" {
-			return value
-		}
-		return current + value
-	}
-	if value, ok := event["v"].(string); ok && event["p"] == nil && event["o"] == nil {
-		return current + value
-	}
-	if values, ok := event["v"].([]any); ok {
-		for _, raw := range values {
-			if operation, ok := raw.(map[string]any); ok {
-				current = applyConversationTextPatch(operation, current)
-			}
-		}
-	}
-	return current
+	return conversationID, messageID, text, nil
 }

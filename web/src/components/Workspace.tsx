@@ -174,6 +174,12 @@ export default function Workspace({ me, onLogout }: { me: Me; onLogout: () => vo
             ),
           )
         },
+        onReplace: (full) => {
+          streamed = full
+          setMessages((prev) =>
+            prev.map((message) => (message.id === assistantId ? { ...message, text: full } : message)),
+          )
+        },
         onDone: (event) => {
           const finalText = event.text || streamed
           setMessages((prev) =>

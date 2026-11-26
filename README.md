@@ -180,6 +180,7 @@ fetch('/api/auth/session').then(r => r.json()).then(s => console.log(JSON.string
 data: {"type":"start"}
 data: {"type":"delta","text":"你"}
 data: {"type":"delta","text":"好"}
+data: {"type":"replace","text":"完整替换文本（fallbackMarkdown 会用到）"}
 data: {"type":"done","conversation_id":"...","message_id":"...","text":"你好"}
 ```
 

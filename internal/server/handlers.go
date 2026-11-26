@@ -294,16 +294,19 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), s.cfg.RequestTimeout())
 	defer cancel()
 
-	sentDelta := false
+	sentText := false
 	result, err := client.SendMessage(ctx, body.ConversationID, body.ParentMessageID, body.Message, body.Attachments, func(delta string) error {
-		sentDelta = true
+		sentText = true
 		return stream.event(map[string]any{"type": "delta", "text": delta})
+	}, func(full string) error {
+		sentText = true
+		return stream.event(map[string]any{"type": "replace", "text": full})
 	})
 	if err != nil {
 		stream.event(map[string]any{"type": "error", "message": displayError(err)})
 		return
 	}
-	if !sentDelta && result.Text != "" {
+	if !sentText && result.Text != "" {
 		_ = stream.event(map[string]any{"type": "delta", "text": result.Text})
 	}
 	stream.event(map[string]any{
