@@ -1,6 +1,8 @@
 import { isValidElement, useState, type ReactNode } from 'react'
 import ReactMarkdown from 'react-markdown'
+import rehypeKatex from 'rehype-katex'
 import remarkGfm from 'remark-gfm'
+import remarkMath from 'remark-math'
 
 function plainText(node: ReactNode): string {
   if (node == null || typeof node === 'boolean') return ''
@@ -34,11 +36,33 @@ function CodeBlock({ children }: { children?: ReactNode }) {
   )
 }
 
+// ChatGPT 的 fallbackMarkdown 使用 LaTeX 的 \[...\] 和 \(...\) 分隔符，
+// remark-math 只识别 $...$ / $$...$$；在代码块和行内代码之外做转换。
+function convertMathSegment(segment: string): string {
+  let result = segment.replace(/\\\[([\s\S]*?)\\\]/g, (_, body: string) => `\n\n$$\n${body.trim()}\n$$\n\n`)
+  result = result.replace(/\\\(([\s\S]*?)\\\)/g, (_, body: string) => `$${body}$`)
+  return result
+}
+
+function normalizeMath(value: string): string {
+  return value
+    .split(/(```[\s\S]*?```)/g)
+    .map((part, blockIndex) => {
+      if (blockIndex % 2 === 1) return part
+      return part
+        .split(/(`[^`]*`)/g)
+        .map((segment, inlineIndex) => (inlineIndex % 2 === 1 ? segment : convertMathSegment(segment)))
+        .join('')
+    })
+    .join('')
+}
+
 export default function Markdown({ text }: { text: string }) {
   return (
     <div className="markdown">
       <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
+        remarkPlugins={[remarkGfm, remarkMath]}
+        rehypePlugins={[rehypeKatex]}
         components={{
           pre: ({ children }) => <CodeBlock>{children}</CodeBlock>,
           a: ({ children, href }) => (
@@ -53,7 +77,7 @@ export default function Markdown({ text }: { text: string }) {
           ),
         }}
       >
-        {text}
+        {normalizeMath(text)}
       </ReactMarkdown>
     </div>
   )

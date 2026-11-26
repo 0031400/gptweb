@@ -911,6 +911,34 @@ button {
   border-radius: 10px;
   border: 1px solid var(--border);
 }
+.markdown .katex {
+  font-size: 1.04em;
+}
+.markdown .katex-display {
+  margin: 0.9em 0;
+  padding: 2px 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+.markdown .katex-error {
+  color: var(--danger);
+}
+/* KaTeX 的 HTML 渲染会把 \boxed 画成一个空的 fbox 竖线，
+   真正的内容在 boxpad 里。隐藏 fbox，并给整个公式显示容器画框，
+   这样积分号、上下限等较高的符号也不会超出边框。 */
+.markdown .katex .fbox {
+  display: none !important;
+}
+.markdown .katex-display:has(.boxpad) {
+  width: fit-content;
+  margin: 1em auto;
+  padding: 0.45em 0.9em !important;
+  border: 1px solid var(--text) !important;
+  border-radius: 4px;
+}
+.markdown table .katex {
+  font-size: 0.96em;
+}
 .table-wrap {
   margin: 14px 0;
   overflow-x: auto;
