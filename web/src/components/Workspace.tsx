@@ -202,8 +202,9 @@ export default function Workspace({ me, onLogout }: { me: Me; onLogout: () => vo
             prev.flatMap((message) => {
               if (message.id !== assistantId) return [message]
               const text = finalText || message.text
-              if (!text) return []
-              return [{ ...message, id: event.message_id || message.id, text, streaming: false }]
+              const genui = event.genui
+              if (!text && (!genui || genui.length === 0)) return []
+              return [{ ...message, id: event.message_id || message.id, text, genui, streaming: false }]
             }),
           )
           if (event.conversation_id) {

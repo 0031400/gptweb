@@ -115,7 +115,7 @@ fetch('/api/auth/session').then(r => r.json()).then(s => console.log(JSON.string
 - 拉取 ChatGPT 会话列表，支持搜索、加载更多、删除。
 - 查看历史会话并继续对话，历史里的图片和文件附件会一并展示。
 - 新建会话、流式输出、停止生成、Markdown 渲染、数学公式（KaTeX）、代码块一键复制。
-- genui / image_group 等私用区标记统一显示为「暂不支持」胶囊标签；Mermaid 和其他代码块一样显示源码与语言名，不渲染图表。
+- content.parts 里的 GenUI 组件按类型渲染：柱状图/折线图/饼图（Recharts）、代码块、异步图片、链接、写作块；地图和其他未实现类型显示「未实现」。Mermaid 和其他代码块一样显示源码与语言名，不渲染图表。
 - 支持图片和文件：点击回形针选择、拖拽到窗口、或直接粘贴图片；发送前可预览和移除。
 - 单文件最大 20MB，一次最多 8 个附件；历史会话里的图片可查看，文件可下载。
 - 模型固定使用 `auto`，由 ChatGPT 自动选择，不提供选择器。
@@ -182,8 +182,37 @@ data: {"type":"start"}
 data: {"type":"delta","text":"你"}
 data: {"type":"delta","text":"好"}
 data: {"type":"replace","text":"完整替换文本（content.parts 被覆盖时会用到）"}
-data: {"type":"done","conversation_id":"...","message_id":"...","text":"你好"}
+data: {"type":"done","conversation_id":"...","message_id":"...","text":"你好","genui":[...]}
 ```
+
+`genui` 数组与历史接口的 `message.genui` 相同，每项包含：
+
+```json
+{
+  "type": "charts_widget_v2",
+  "start_index": 20,
+  "end_index": 248,
+  "data": {
+    "chartType": "bar",
+    "xKey": "month",
+    "series": [{"dataKey": "sales", "label": "销售额", "valuePrefix": "¥"}],
+    "data": [{"month": "1月", "sales": 120}],
+    "description": "示例数据"
+  }
+}
+```
+
+`text` 始终是原封不动的 content.parts。`start_index` / `end_index` 也原样透传，前端删除该区间并插入组件。后端只发送组件渲染需要的最小 `data`，不再发送 `safe_urls`、完整 `resolved` 等冗余字段：
+
+- `code_block`：`{ language, code }`
+- `writing_block`：`{ subject, variant, body }`
+- `async_image`：`{ query, aspectRatio, width, maxWidth, images: [{ thumbnail_url, content_url, url, title }] }`
+- `link`：`{ url, title }`
+- `charts_widget_v2`：`{ chartType, data, xKey/nameKey/valueKey, series, description }`
+- `map_widget_v2`：不带 data，前端显示「未实现」
+- `interactive_block`：上游没有范围；后端按 `{@body ... DIL.useState(...)}` + 后续顶层 `<box>/<row>` 推导区间，不带 data，前端显示「未实现」
+
+前端按类型选择实现，未实现的类型显示「未实现」。
 
 出错时返回 `{"type":"error","message":"..."}`。
 
@@ -212,7 +241,7 @@ gptweb/
 ## 已知限制
 
 - 支持图片和常见文档，不支持语音、视频和实时通话。
-- 所有 genui / image_group 等特殊组件标记统一显示为「暂不支持」胶囊标签，不展示组件数据或类型；Mermaid 不渲染为图，只按普通代码块显示源码和语言名；卡片布局、交互控件、动态数据和 AppBlock 只保留文本。
+- 当前实现的 GenUI 类型：`charts_widget_v2`（bar/line/pie）、`code_block`、`async_image`、`link`、`writing_block`。`map_widget_v2` 及未知类型显示「未实现」；卡片布局、交互控件、动态数据和 AppBlock 只保留文本。Mermaid 不渲染为图，只按普通代码块显示源码和语言名。
 - 单文件上限 20MB，一次最多 8 个附件。
 - 不支持编辑/重新生成消息。
 - 会话标题由 ChatGPT 生成，刚建的新会话可能短暂显示为「新对话」。

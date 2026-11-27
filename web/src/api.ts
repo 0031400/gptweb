@@ -23,6 +23,13 @@ export type Attachment = {
   previewUrl?: string
 }
 
+export type GenUIComponent = {
+  type: string
+  start_index: number
+  end_index: number
+  data?: Record<string, unknown>
+}
+
 export type Message = {
   id: string
   role: 'user' | 'assistant'
@@ -30,6 +37,7 @@ export type Message = {
   create_time?: number
   streaming?: boolean
   attachments?: Attachment[]
+  genui?: GenUIComponent[]
 }
 
 export type Conversation = {
@@ -76,7 +84,7 @@ export type ChatStreamEvent =
   | { type: 'start' }
   | { type: 'delta'; text: string }
   | { type: 'replace'; text: string }
-  | { type: 'done'; conversation_id: string; message_id?: string; text: string }
+  | { type: 'done'; conversation_id: string; message_id?: string; text: string; genui?: GenUIComponent[] }
   | { type: 'error'; message: string }
 
 export type ChatRequest = {

@@ -9,7 +9,7 @@ import {
 } from 'react'
 import { fileURL, uploadFile, type Attachment, type Message } from '../api'
 import { cx, formatBytes, isImageFile } from '../utils'
-import Markdown from './Markdown'
+import MessageContent from './GenUI'
 import {
   IconArrowUp,
   IconClose,
@@ -307,7 +307,9 @@ export default function ChatPanel(props: Props) {
               <article key={message.id} className={cx('msg', message.role)}>
                 {message.role === 'assistant' ? (
                   <div className="assistant-body">
-                    {message.text ? <Markdown text={message.text} /> : null}
+                    {message.text || (message.genui && message.genui.length > 0) ? (
+                      <MessageContent text={message.text} genui={message.genui} />
+                    ) : null}
                     {message.attachments && message.attachments.length > 0 && (
                       <MessageAttachments
                         attachments={message.attachments}

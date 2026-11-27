@@ -309,12 +309,16 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	if !sentText && result.Text != "" {
 		_ = stream.event(map[string]any{"type": "delta", "text": result.Text})
 	}
-	stream.event(map[string]any{
+	done := map[string]any{
 		"type":            "done",
 		"conversation_id": result.ConversationID,
 		"message_id":      result.MessageID,
 		"text":            result.Text,
-	})
+	}
+	if len(result.GenUI) > 0 {
+		done["genui"] = result.GenUI
+	}
+	stream.event(done)
 }
 
 func displayError(err error) string {

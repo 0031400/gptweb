@@ -10,9 +10,12 @@ import (
 	"io"
 	"os"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf16"
+	"unicode/utf8"
 
 	fhttp "github.com/bogdanfinn/fhttp"
 	tls_client "github.com/bogdanfinn/tls-client"
@@ -297,11 +300,21 @@ func displayTitle(title string) string {
 // ---------------- conversation detail ----------------
 
 type Message struct {
-	ID          string       `json:"id"`
-	Role        string       `json:"role"`
-	Text        string       `json:"text"`
-	CreateTime  float64      `json:"create_time,omitempty"`
-	Attachments []Attachment `json:"attachments,omitempty"`
+	ID          string           `json:"id"`
+	Role        string           `json:"role"`
+	Text        string           `json:"text"`
+	CreateTime  float64          `json:"create_time,omitempty"`
+	Attachments []Attachment     `json:"attachments,omitempty"`
+	GenUI       []GenUIComponent `json:"genui,omitempty"`
+}
+
+// GenUIComponent 是上游 genui_components 的原始范围。
+// StartIndex/EndIndex 原样透传；Data 是后端整理后的最小渲染数据。
+type GenUIComponent struct {
+	Type       string         `json:"type"`
+	StartIndex int            `json:"start_index"`
+	EndIndex   int            `json:"end_index"`
+	Data       map[string]any `json:"data,omitempty"`
 }
 
 type Conversation struct {
@@ -368,8 +381,9 @@ func normalizeMessage(m map[string]any) (Message, bool) {
 	content, _ := m["content"].(map[string]any)
 	attachments := messageAttachments(content, metadata)
 	text := contentText(content)
+	var genui []GenUIComponent
 	if role == "assistant" {
-		text = cleanAssistantParts(text)
+		genui = normalizeGenUI(text, metadata)
 	}
 
 	// 图片生成等工具结果放在 role=tool 的消息里，最终 assistant 文本
@@ -392,7 +406,7 @@ func normalizeMessage(m map[string]any) (Message, bool) {
 		return Message{}, false
 	}
 	id, _ := m["id"].(string)
-	return Message{ID: id, Role: role, Text: text, CreateTime: messageCreateTime(m), Attachments: attachments}, true
+	return Message{ID: id, Role: role, Text: text, CreateTime: messageCreateTime(m), Attachments: attachments, GenUI: genui}, true
 }
 
 func messageAttachments(content, metadata map[string]any) []Attachment {
@@ -541,159 +555,413 @@ func int64Value(value any) int64 {
 	return 0
 }
 
-var (
-	badgePattern      = regexp.MustCompile(`(?is)<badge\b[^>]*>(.*?)</badge>`)
-	linkPattern       = regexp.MustCompile(`(?is)<Link\b([^>]*)>(.*?)</Link>|<Link\b([^>]*)/>`)
-	asyncImagePattern = regexp.MustCompile(`(?is)<AsyncImage\b[^>]*/>`)
-	iconPattern       = regexp.MustCompile(`(?is)<icon\b[^>]*/>|<icon\b[^>]*>.*?</icon>`)
-	dividerPattern    = regexp.MustCompile(`(?is)<divider\b[^>]*/>`)
-)
+var tagAttributePattern = regexp.MustCompile(`([A-Za-z_][\w-]*)\s*=\s*"([^"]*)"`)
 
-var genuiContainerNames = map[string]bool{
-	"box": true, "list": true, "list-item": true, "row": true, "text": true,
-	"button": true, "radio": true, "radio-group": true, "option": true,
-	"checkbox": true, "switch": true, "input": true, "textarea": true,
-	"select": true, "form": true, "card": true, "field": true, "label": true,
-	"slider": true, "CodeBlock": true,
+// normalizeGenUI 把上游 genui_components 整理成前端需要的最小数据。
+// start_index/end_index 原样透传，前端直接用 text.slice 删除区间并插入组件。
+func normalizeGenUI(text string, metadata map[string]any) []GenUIComponent {
+	raw, _ := metadata["genui_components"].([]any)
+	results := componentResults(metadata)
+	components := make([]GenUIComponent, 0, len(raw))
+	for _, item := range raw {
+		value, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		componentType, _ := value["type"].(string)
+		if componentType == "" {
+			continue
+		}
+		start := intValue(value["start_index"])
+		end := intValue(value["end_index"])
+		source := genuiSource(text, start, end)
+		components = append(components, GenUIComponent{
+			Type:       componentType,
+			StartIndex: start,
+			EndIndex:   end,
+			Data:       genuiData(componentType, source, value, results),
+		})
+	}
+	// {@body ... DIL.useState(...)} 交互块没有 genui_components 条目，
+	// 按 parts 里的声明 + 后续顶层容器推导一个区间，前端统一显示「未实现」。
+	components = append(components, deriveInteractiveBlocks(text, components)...)
+	if len(components) == 0 {
+		return nil
+	}
+	sort.SliceStable(components, func(i, j int) bool {
+		return components[i].StartIndex < components[j].StartIndex
+	})
+	return components
 }
 
-// cleanAssistantParts 去掉 content.parts 里 ChatGPT 私有的 GenUI 容器标签。
-// 只处理代码块和行内代码之外的文本，避免误伤 C#/XAML 示例里的 <T>、<Grid> 等。
-func cleanAssistantParts(text string) string {
-	if text == "" {
-		return ""
+func deriveInteractiveBlocks(text string, existing []GenUIComponent) []GenUIComponent {
+	var components []GenUIComponent
+	searchAt := 0
+	for {
+		relative := strings.Index(text[searchAt:], "{@body")
+		if relative < 0 {
+			break
+		}
+		start := searchAt + relative
+		searchAt = start + len("{@body")
+		lineStart := strings.LastIndexByte(text[:start], '\n') + 1
+		if strings.TrimSpace(text[lineStart:start]) != "" || insideCodeFence(text, start) {
+			continue
+		}
+		cursor := lineStart
+		for cursor < len(text) {
+			lineEnd := strings.IndexByte(text[cursor:], '\n')
+			if lineEnd < 0 {
+				lineEnd = len(text)
+			} else {
+				lineEnd += cursor
+			}
+			line := strings.TrimSpace(text[cursor:lineEnd])
+			if line == "" || strings.HasPrefix(line, "{@body") {
+				cursor = lineEnd + 1
+				continue
+			}
+			break
+		}
+		relative = strings.IndexByte(text[cursor:], '<')
+		if relative < 0 {
+			continue
+		}
+		open := cursor + relative
+		if strings.TrimSpace(text[cursor:open]) != "" {
+			continue
+		}
+		name := tagNameAt(text, open)
+		if name == "" {
+			continue
+		}
+		end := matchingTagEnd(text, open, name)
+		if end <= start {
+			continue
+		}
+		startIndex := utf8.RuneCountInString(text[:lineStart])
+		endIndex := utf8.RuneCountInString(text[:end])
+		if overlapsGenUI(existing, startIndex, endIndex) || overlapsGenUI(components, startIndex, endIndex) {
+			searchAt = end
+			continue
+		}
+		components = append(components, GenUIComponent{
+			Type:       "interactive_block",
+			StartIndex: startIndex,
+			EndIndex:   endIndex,
+		})
+		searchAt = end
 	}
-	lines := strings.Split(text, "\n")
+	return components
+}
+
+func insideCodeFence(text string, position int) bool {
 	inFence := false
-	for index, line := range lines {
+	for _, line := range strings.Split(text[:position], "\n") {
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
 			inFence = !inFence
-			continue
-		}
-		if inFence {
-			continue
-		}
-		lines[index] = cleanInlineSegments(line)
-	}
-	return strings.Join(lines, "\n")
-}
-
-func cleanInlineSegments(line string) string {
-	parts := strings.Split(line, "`")
-	for index := range parts {
-		if index%2 == 0 {
-			parts[index] = cleanGenUITags(parts[index])
 		}
 	}
-	return strings.Join(parts, "`")
+	return inFence
 }
 
-func cleanGenUITags(text string) string {
-	text = badgePattern.ReplaceAllString(text, "$1")
-	text = linkPattern.ReplaceAllStringFunc(text, func(match string) string {
-		groups := linkPattern.FindStringSubmatch(match)
-		if groups == nil {
-			return match
+func overlapsGenUI(components []GenUIComponent, start, end int) bool {
+	for _, component := range components {
+		if start < component.EndIndex && component.StartIndex < end {
+			return true
 		}
-		attrs := groups[1]
-		label := ""
-		if groups[2] != "" {
-			attrs = groups[1]
-			label = groups[2]
-		} else {
-			attrs = groups[3]
-		}
-		url := tagAttribute(attrs, "url")
-		title := tagAttribute(attrs, "title")
-		if title == "" {
-			title = label
-		}
-		if title == "" {
-			title = url
-		}
-		if url == "" {
-			return title
-		}
-		return "[" + title + "](" + url + ")"
-	})
-	text = asyncImagePattern.ReplaceAllString(text, "[图片]")
-	text = iconPattern.ReplaceAllString(text, "")
-	text = dividerPattern.ReplaceAllString(text, "")
-	text = stripGenUIContainers(text)
-	return text
-}
-
-// stripGenUIContainers 去掉已知的 GenUI 容器标签，但保留其中的文字。
-// 用括号深度扫描而不是 [^>]*，因为 button 的 onClick={()=>...} 里也有 >。
-func stripGenUIContainers(text string) string {
-	var builder strings.Builder
-	for index := 0; index < len(text); {
-		if text[index] != '<' {
-			builder.WriteByte(text[index])
-			index++
-			continue
-		}
-		cursor := index + 1
-		if cursor < len(text) && text[cursor] == '/' {
-			cursor++
-		}
-		nameStart := cursor
-		for cursor < len(text) && isTagNameChar(text[cursor]) {
-			cursor++
-		}
-		name := text[nameStart:cursor]
-		if !genuiContainerNames[name] {
-			builder.WriteByte(text[index])
-			index++
-			continue
-		}
-		quoted := byte(0)
-		braces := 0
-		for ; cursor < len(text); cursor++ {
-			char := text[cursor]
-			if quoted != 0 {
-				if char == quoted {
-					quoted = 0
-				}
-				continue
-			}
-			switch char {
-			case '"', '\'':
-				quoted = char
-			case '{':
-				braces++
-			case '}':
-				if braces > 0 {
-					braces--
-				}
-			case '>':
-				if braces == 0 {
-					cursor++
-					goto done
-				}
-			}
-		}
-	done:
-		if cursor > len(text) {
-			cursor = len(text)
-		}
-		index = cursor
 	}
-	return builder.String()
+	return false
 }
 
-func isTagNameChar(char byte) bool {
-	return char >= 'a' && char <= 'z' || char >= 'A' && char <= 'Z' || char >= '0' && char <= '9' || char == '-'
-}
-
-func tagAttribute(tag, name string) string {
-	pattern := regexp.MustCompile(`(?is)\b` + regexp.QuoteMeta(name) + `\s*=\s*"([^"]*)"`)
-	match := pattern.FindStringSubmatch(tag)
-	if len(match) < 2 {
+func tagNameAt(text string, position int) string {
+	if position >= len(text) || text[position] != '<' {
 		return ""
 	}
-	return match[1]
+	cursor := position + 1
+	if cursor < len(text) && text[cursor] == '/' {
+		cursor++
+	}
+	start := cursor
+	for cursor < len(text) {
+		char := text[cursor]
+		if char >= 'a' && char <= 'z' || char >= 'A' && char <= 'Z' || char >= '0' && char <= '9' || char == '-' {
+			cursor++
+			continue
+		}
+		break
+	}
+	return text[start:cursor]
+}
+
+func matchingTagEnd(text string, open int, name string) int {
+	openEnd := tagEnd(text, open)
+	if openEnd < 0 {
+		return -1
+	}
+	if openEnd >= 2 && text[openEnd-2] == '/' {
+		return openEnd
+	}
+	depth := 1
+	cursor := openEnd
+	for cursor < len(text) {
+		relative := strings.IndexByte(text[cursor:], '<')
+		if relative < 0 {
+			return -1
+		}
+		position := cursor + relative
+		next := tagEnd(text, position)
+		if next < 0 {
+			return -1
+		}
+		if tagNameAt(text, position) == name {
+			closing := position+1 < len(text) && text[position+1] == '/'
+			selfClosing := next >= 2 && text[next-2] == '/'
+			if closing {
+				depth--
+				if depth == 0 {
+					return next
+				}
+			} else if !selfClosing {
+				depth++
+			}
+		}
+		cursor = next
+	}
+	return -1
+}
+
+func tagEnd(text string, position int) int {
+	quote := byte(0)
+	braces := 0
+	for cursor := position + 1; cursor < len(text); cursor++ {
+		char := text[cursor]
+		if quote != 0 {
+			if char == quote {
+				quote = 0
+			}
+			continue
+		}
+		switch char {
+		case '"', '\'':
+			quote = char
+		case '{':
+			braces++
+		case '}':
+			if braces > 0 {
+				braces--
+			}
+		case '>':
+			if braces == 0 {
+				return cursor + 1
+			}
+		}
+	}
+	return -1
+}
+
+func genuiSource(text string, start, end int) string {
+	runes := []rune(text)
+	if start >= 0 && end > start && end <= len(runes) {
+		source := string(runes[start:end])
+		if strings.HasPrefix(strings.TrimSpace(source), "<") {
+			return source
+		}
+	}
+	units := utf16.Encode(runes)
+	if start >= 0 && end > start && end <= len(units) {
+		source := string(utf16.Decode(units[start:end]))
+		if strings.HasPrefix(strings.TrimSpace(source), "<") {
+			return source
+		}
+	}
+	return ""
+}
+
+func genuiData(componentType, source string, value map[string]any, results map[string]any) map[string]any {
+	switch componentType {
+	case "code_block":
+		attrs, body, ok := parseWrappedTag(source, "CodeBlock")
+		if !ok {
+			return nil
+		}
+		return map[string]any{"language": attrs["language"], "code": body}
+	case "writing_block":
+		attrs, body, ok := parseWrappedTag(source, "WritingBlock")
+		if !ok {
+			return nil
+		}
+		return map[string]any{
+			"subject": attrs["subject"],
+			"variant": attrs["variant"],
+			"body":    body,
+		}
+	case "async_image":
+		attrs := tagAttributes(source)
+		data := map[string]any{}
+		for _, key := range []string{"query", "aspectRatio", "width", "maxWidth"} {
+			if attrs[key] != "" {
+				data[key] = attrs[key]
+			}
+		}
+		if id, _ := value["component_resolution_id"].(string); id != "" {
+			if state := resolvedState(results, id); state != nil {
+				if images := compactImages(state["images"]); len(images) > 0 {
+					data["images"] = images
+				}
+			}
+		}
+		if len(data) == 0 {
+			return nil
+		}
+		return data
+	case "link":
+		attrs := tagAttributes(source)
+		data := map[string]any{}
+		if id, _ := value["component_resolution_id"].(string); id != "" {
+			if state := resolvedState(results, id); state != nil {
+				if text := stringValue(state["url"]); text != "" {
+					data["url"] = text
+				}
+				if text := stringValue(state["title"]); text != "" {
+					data["title"] = text
+				}
+			}
+		}
+		if _, exists := data["url"]; !exists && attrs["url"] != "" {
+			data["url"] = attrs["url"]
+		}
+		if _, exists := data["title"]; !exists && attrs["title"] != "" {
+			data["title"] = attrs["title"]
+		}
+		if len(data) == 0 {
+			return nil
+		}
+		return data
+	case "charts_widget_v2":
+		return chartData(source)
+	default:
+		// map 等未实现类型不需要携带数据；前端按 type 显示「未实现」。
+		return nil
+	}
+}
+
+func tagAttributes(source string) map[string]string {
+	head := source
+	if end := strings.IndexByte(source, '>'); end >= 0 {
+		head = source[:end]
+	}
+	result := map[string]string{}
+	for _, match := range tagAttributePattern.FindAllStringSubmatch(head, -1) {
+		if len(match) >= 3 {
+			result[match[1]] = match[2]
+		}
+	}
+	return result
+}
+
+func parseWrappedTag(source, tag string) (map[string]string, string, bool) {
+	trimmed := strings.TrimSpace(source)
+	if !strings.HasPrefix(trimmed, "<"+tag) {
+		return nil, "", false
+	}
+	openEnd := strings.IndexByte(trimmed, '>')
+	closeStart := strings.LastIndex(trimmed, "</"+tag+">")
+	if openEnd < 0 || closeStart < openEnd {
+		return nil, "", false
+	}
+	body := trimmed[openEnd+1 : closeStart]
+	body = strings.TrimPrefix(body, "\n")
+	body = strings.TrimRight(body, "\n \t")
+	return tagAttributes(trimmed[:openEnd+1]), body, true
+}
+
+func componentResults(metadata map[string]any) map[string]any {
+	dil, _ := metadata["model_dil_v2"].(map[string]any)
+	appData, _ := dil["appData"].(map[string]any)
+	opGenui, _ := appData["opGenui"].(map[string]any)
+	results, _ := opGenui["componentResults"].(map[string]any)
+	return results
+}
+
+func resolvedState(results map[string]any, id string) map[string]any {
+	result, _ := results[id].(map[string]any)
+	state, _ := result["state"].(map[string]any)
+	return state
+}
+
+func compactImages(value any) []any {
+	list, _ := value.([]any)
+	images := make([]any, 0, len(list))
+	for _, item := range list {
+		entry, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		image := map[string]any{}
+		for _, key := range []string{"thumbnail_url", "content_url", "url", "title"} {
+			if text := stringValue(entry[key]); text != "" {
+				image[key] = text
+			}
+		}
+		if len(image) > 0 {
+			images = append(images, image)
+		}
+	}
+	return images
+}
+
+func chartData(source string) map[string]any {
+	open := strings.Index(source, "{{")
+	close := strings.LastIndex(source, "}}")
+	if open < 0 || close <= open {
+		return nil
+	}
+	var content map[string]any
+	if json.Unmarshal([]byte("{"+source[open+2:close]+"}"), &content) != nil {
+		return nil
+	}
+	data, _ := content["data"].([]any)
+	if len(data) == 0 {
+		return nil
+	}
+	result := map[string]any{
+		"chartType": stringValue(content["chartType"]),
+		"data":      data,
+	}
+	for _, key := range []string{"xKey", "nameKey", "valueKey"} {
+		if text := stringValue(content[key]); text != "" {
+			result[key] = text
+		}
+	}
+	if series, ok := content["series"].([]any); ok && len(series) > 0 {
+		compact := make([]any, 0, len(series))
+		for _, raw := range series {
+			entry, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+			item := map[string]any{}
+			for _, key := range []string{"dataKey", "label", "valuePrefix", "valueSuffix"} {
+				if text := stringValue(entry[key]); text != "" {
+					item[key] = text
+				}
+			}
+			if len(item) > 0 {
+				compact = append(compact, item)
+			}
+		}
+		if len(compact) > 0 {
+			result["series"] = compact
+		}
+	}
+	if meta, ok := content["meta"].(map[string]any); ok {
+		if description := stringValue(meta["description"]); description != "" {
+			result["description"] = description
+		}
+	}
+	return result
 }
 
 func contentText(content map[string]any) string {
@@ -749,9 +1017,10 @@ func (c *Client) DeleteConversation(ctx context.Context, id string) error {
 // ---------------- chat ----------------
 
 type SendResult struct {
-	ConversationID string `json:"conversation_id"`
-	MessageID      string `json:"message_id,omitempty"`
-	Text           string `json:"text"`
+	ConversationID string           `json:"conversation_id"`
+	MessageID      string           `json:"message_id,omitempty"`
+	Text           string           `json:"text"`
+	GenUI          []GenUIComponent `json:"genui,omitempty"`
 }
 
 func (c *Client) SendMessage(ctx context.Context, conversationID, parentID, text string, attachments []Attachment, onDelta, onReplace func(string) error) (SendResult, error) {
@@ -882,19 +1151,36 @@ func (c *Client) SendMessage(ctx context.Context, conversationID, parentID, text
 		convID = conversationID
 	}
 	result := SendResult{ConversationID: convID, MessageID: msgID, Text: strings.TrimSpace(full)}
-	if err == nil && convID != "" && full == "" {
-		// 流里没有 content.parts 文本时，回头读一次会话作为兜底；
-		// 历史归一化同样使用 content.parts。
+	if err == nil && convID != "" {
+		// 读一次历史，拿稳定的 message id、content.parts 文本和 genui 范围。
+		// 这样 SSE 的 done 事件和历史接口返回的结构一致。
 		if conv, getErr := c.GetConversation(ctx, convID); getErr == nil {
-			for i := len(conv.Messages) - 1; i >= 0; i-- {
-				if conv.Messages[i].Role == "assistant" {
-					result.Text = conv.Messages[i].Text
-					result.MessageID = conv.Messages[i].ID
+			var chosen *Message
+			if result.MessageID != "" {
+				for index := range conv.Messages {
+					if conv.Messages[index].ID == result.MessageID {
+						chosen = &conv.Messages[index]
+						break
+					}
+				}
+			}
+			if chosen == nil {
+				for index := len(conv.Messages) - 1; index >= 0; index-- {
+					if conv.Messages[index].Role == "assistant" && strings.TrimSpace(conv.Messages[index].Text) != "" {
+						chosen = &conv.Messages[index]
+						break
+					}
+				}
+			}
+			if chosen != nil {
+				if strings.TrimSpace(chosen.Text) != "" {
+					result.Text = chosen.Text
 					if full == "" && onDelta != nil {
 						_ = onDelta(result.Text)
 					}
-					break
 				}
+				result.MessageID = chosen.ID
+				result.GenUI = chosen.GenUI
 			}
 		}
 	}
@@ -1234,7 +1520,7 @@ func readConversationSSE(reader io.Reader, onDelta, onReplace func(string) error
 	if messageID == "" {
 		messageID = state.currentID
 	}
-	text = strings.TrimSpace(cleanAssistantParts(text))
+	text = strings.TrimSpace(text)
 	if text == "" && upstreamError != "" {
 		return conversationID, messageID, text, fmt.Errorf("ChatGPT 返回错误：%s", upstreamError)
 	}

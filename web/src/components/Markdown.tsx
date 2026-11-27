@@ -55,12 +55,12 @@ function convertMathSegment(segment: string): string {
 
 // genui / image_group 等特殊内容统一用私用区字符包裹：
 //    type  {json} 
-// 当前客户端不实现这些组件，整段替换为「暂不支持」内联标签。
+// 当前客户端不实现这些组件，整段替换为「未实现」内联标签。
 const UNSUPPORTED_HREF = '#gptweb-unsupported'
 const genUIPattern = /([^]*)([\s\S]*?)/g
 
 function replaceGenUISegment(segment: string): string {
-  let result = segment.replace(genUIPattern, `[暂不支持](${UNSUPPORTED_HREF})`)
+  let result = segment.replace(genUIPattern, `[未实现](${UNSUPPORTED_HREF})`)
   // 流式输出时标记可能只到一半，先把未闭合的标记隐藏，避免露出私用区字符。
   const openIndex = result.lastIndexOf('')
   const closeIndex = result.lastIndexOf('')
