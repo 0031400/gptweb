@@ -1,6 +1,4 @@
 import {
-  lazy,
-  Suspense,
   useEffect,
   useRef,
   useState,
@@ -11,6 +9,7 @@ import {
 } from 'react'
 import { fileURL, uploadFile, type Attachment, type Message } from '../api'
 import { cx, formatBytes, isImageFile } from '../utils'
+import MessageContent from './GenUI'
 import {
   IconArrowUp,
   IconClose,
@@ -44,7 +43,6 @@ type PendingFile = {
 
 const MAX_FILES = 8
 const MAX_FILE_SIZE = 20 * 1024 * 1024
-const MessageContent = lazy(() => import('./GenUI'))
 
 function MessageAttachments({
   attachments,
@@ -310,9 +308,7 @@ export default function ChatPanel(props: Props) {
                 {message.role === 'assistant' ? (
                   <div className="assistant-body">
                     {message.text || (message.genui && message.genui.length > 0) ? (
-                      <Suspense fallback={<div className="markdown-loading" />}>
-                        <MessageContent text={message.text} genui={message.genui} />
-                      </Suspense>
+                      <MessageContent text={message.text} genui={message.genui} />
                     ) : null}
                     {message.attachments && message.attachments.length > 0 && (
                       <MessageAttachments

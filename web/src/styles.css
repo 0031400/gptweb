@@ -1157,20 +1157,6 @@ button {
   border-radius: 14px;
   background: var(--surface);
 }
-.genui-chart-loading {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 240px;
-  border: 1px solid var(--border);
-  border-radius: 14px;
-  background: var(--surface);
-  color: var(--text-faint);
-  font-size: 12px;
-}
-.markdown-loading {
-  min-height: 22px;
-}
 .genui-chart-canvas {
   width: 100%;
   min-height: 240px;
