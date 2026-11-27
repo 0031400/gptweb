@@ -1,7 +1,8 @@
-import { useState, type CSSProperties, type ReactNode } from 'react'
+import { lazy, Suspense, useState, type CSSProperties, type ReactNode } from 'react'
 import type { GenUIComponent } from '../api'
-import ChartWidget from './GenUIChart'
 import Markdown from './Markdown'
+
+const ChartWidget = lazy(() => import('./GenUIChart'))
 
 type RecordValue = Record<string, unknown>
 
@@ -196,7 +197,11 @@ function GenUIBlock({ component }: { component: GenUIComponent }) {
     case 'link':
       return <LinkWidget data={data} />
     case 'charts_widget_v2':
-      return <ChartWidget data={data} />
+      return (
+        <Suspense fallback={<div className="genui-chart-loading">图表加载中…</div>}>
+          <ChartWidget data={data} />
+        </Suspense>
+      )
     case 'map_widget_v2':
     case 'map':
       return <MapWidget />
