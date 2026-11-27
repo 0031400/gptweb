@@ -9,6 +9,8 @@ import {
   Pie,
   PieChart,
   ResponsiveContainer,
+  Scatter,
+  ScatterChart,
   Tooltip,
   XAxis,
   YAxis,
@@ -153,6 +155,40 @@ function CartesianChart({ chart }: { chart: ChartData }) {
   )
 }
 
+function ScatterChartView({ chart }: { chart: ChartData }) {
+  const series = chart.series[0]
+  const data = chart.data.map((item) => ({
+    x: numberValue(item[chart.xKey]),
+    y: numberValue(item[series.dataKey]),
+  }))
+  return (
+    <ResponsiveContainer width="100%" height={280}>
+      <ScatterChart margin={{ top: 12, right: 20, left: 4, bottom: 4 }}>
+        <CartesianGrid stroke="#ececec" strokeDasharray="3 3" />
+        <XAxis
+          type="number"
+          dataKey="x"
+          name={chart.xKey}
+          tick={{ fontSize: 10.5, fill: AXIS_COLOR }}
+          axisLine={false}
+          tickLine={false}
+        />
+        <YAxis
+          type="number"
+          dataKey="y"
+          name={series.label}
+          tick={{ fontSize: 10.5, fill: AXIS_COLOR }}
+          axisLine={false}
+          tickLine={false}
+          width={54}
+        />
+        <Tooltip contentStyle={tooltipStyle()} cursor={{ strokeDasharray: '3 3' }} />
+        <Scatter name={series.label} data={data} fill={COLORS[0]} />
+      </ScatterChart>
+    </ResponsiveContainer>
+  )
+}
+
 function PieChartView({ chart }: { chart: ChartData }) {
   const data = chart.data.map((item) => ({
     name: stringValue(item[chart.nameKey]) || stringValue(item[chart.xKey]),
@@ -192,7 +228,10 @@ function PieChartView({ chart }: { chart: ChartData }) {
 }
 
 export default function ChartWidget({ data }: { data?: RecordValue }) {
-  const chart = normalizeChart(data ?? null)
+  if (!data || Object.keys(data).length === 0) {
+    return <div className="genui-chart-loading">图表生成中…</div>
+  }
+  const chart = normalizeChart(data)
   if (!chart) {
     return <div className="genui-unimplemented">未实现</div>
   }
@@ -201,6 +240,8 @@ export default function ChartWidget({ data }: { data?: RecordValue }) {
       <CartesianChart chart={chart} />
     ) : chart.chartType === 'pie' ? (
       <PieChartView chart={chart} />
+    ) : chart.chartType === 'scatter' ? (
+      <ScatterChartView chart={chart} />
     ) : null
   if (!body) {
     return <div className="genui-unimplemented">未实现</div>

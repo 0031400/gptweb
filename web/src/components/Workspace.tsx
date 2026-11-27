@@ -196,6 +196,12 @@ export default function Workspace({ me, onLogout }: { me: Me; onLogout: () => vo
             prev.map((message) => (message.id === assistantId ? { ...message, text: full } : message)),
           )
         },
+        onGenUI: (components) => {
+          if (components.length === 0) return
+          setMessages((prev) =>
+            prev.map((message) => (message.id === assistantId ? { ...message, genui: components } : message)),
+          )
+        },
         onDone: (event) => {
           const finalText = event.text || streamed
           setMessages((prev) =>

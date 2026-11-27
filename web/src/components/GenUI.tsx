@@ -13,10 +13,17 @@ const CONTAINER_TAGS = new Set([
   'text',
   'title',
   'caption',
+  'blockquote',
   'spacer',
   'underline',
   'list',
   'list-item',
+  'flow',
+  'flow-item',
+  'carousel',
+  'carousel-item',
+  'segmented-control',
+  'date-picker',
   'divider',
   'icon',
   'badge',
@@ -266,24 +273,50 @@ function cleanInline(line: string): string {
 
 export function cleanGenUIText(text: string): string {
   let inFence = false
-  return text
-    .split('\n')
-    .map((line) => {
-      const trimmed = line.trim()
-      if (trimmed.startsWith('```') || trimmed.startsWith('~~~')) {
-        inFence = !inFence
-        return line
+  let inQuote = false
+  const output: string[] = []
+  for (const line of text.split('\n')) {
+    const trimmed = line.trim()
+    if (trimmed.startsWith('```') || trimmed.startsWith('~~~')) {
+      inFence = !inFence
+      output.push(line)
+      continue
+    }
+    if (inFence) {
+      output.push(line)
+      continue
+    }
+    if (inQuote) {
+      const close = trimmed.indexOf('</blockquote>')
+      const inner = close >= 0 ? trimmed.slice(0, close) : trimmed
+      output.push(inner ? `> ${cleanInline(inner)}` : '>')
+      if (close >= 0) inQuote = false
+      continue
+    }
+    const open = trimmed.indexOf('<blockquote')
+    if (open >= 0) {
+      const tagEnd = trimmed.indexOf('>', open)
+      if (tagEnd < 0) {
+        output.push(cleanInline(trimmed))
+        continue
       }
-      if (inFence) return line
-      // 没有推导出区间的 DIL 声明/条件行也不要直接显示。
-      if (/^\s*\{(?:@body|#if|:else|\/if|#each|\/each|@html)\b/.test(line)) {
-        return ''
-      }
-      // GenUI 容器会把正文缩进 4-6 格；去掉这层缩进，避免 Markdown
-      // 把普通文字误判成缩进代码块。围栏代码块内部保持原样。
-      return cleanInline(line).replace(/^[ \t]{4,}/, '')
-    })
-    .join('\n')
+      const after = trimmed.slice(tagEnd + 1)
+      const close = after.indexOf('</blockquote>')
+      const inner = close >= 0 ? after.slice(0, close) : after
+      output.push(inner ? `> ${cleanInline(inner)}` : '>')
+      if (close < 0) inQuote = true
+      continue
+    }
+    // 没有推导出区间的 DIL 声明/条件行也不要直接显示。
+    if (/^\s*\{(?:@body|#if|:else|\/if|#each|\/each|@html)\b/.test(line)) {
+      output.push('')
+      continue
+    }
+    // GenUI 容器会把正文缩进 4-6 格；去掉这层缩进，避免 Markdown
+    // 把普通文字误判成缩进代码块。围栏代码块内部保持原样。
+    output.push(cleanInline(line).replace(/^[ \t]{4,}/, ''))
+  }
+  return output.join('\n')
 }
 
 function escapeLinkLabel(label: string): string {
@@ -294,6 +327,20 @@ function markdownLink(title: string, url: string): string {
   const label = escapeLinkLabel(title)
   const target = url.replace(/\(/g, '%28').replace(/\)/g, '%29')
   return `[${label}](${target})`
+}
+
+// 上游 start_index/end_index 是 Unicode 码点偏移；JS slice 使用 UTF-16 单元，
+// 组件前面出现 emoji 时必须先换算。
+function codePointToUTF16(text: string, offset: number): number {
+  if (offset <= 0) return 0
+  let units = 0
+  let count = 0
+  for (const char of text) {
+    if (count >= offset) break
+    units += char.length
+    count++
+  }
+  return Math.min(units, text.length)
 }
 
 export default function MessageContent({ text, genui }: { text: string; genui?: GenUIComponent[] }) {
@@ -319,8 +366,8 @@ export default function MessageContent({ text, genui }: { text: string; genui?: 
   }
 
   for (const component of components) {
-    const start = Math.max(cursor, component.start_index)
-    const end = Math.min(text.length, component.end_index)
+    const start = Math.max(cursor, codePointToUTF16(text, component.start_index))
+    const end = Math.min(text.length, codePointToUTF16(text, component.end_index))
     if (end <= start || start > text.length) continue
     buffer += text.slice(cursor, start)
     if (component.type === 'link') {

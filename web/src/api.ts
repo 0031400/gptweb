@@ -84,6 +84,7 @@ export type ChatStreamEvent =
   | { type: 'start' }
   | { type: 'delta'; text: string }
   | { type: 'replace'; text: string }
+  | { type: 'genui'; components: GenUIComponent[] }
   | { type: 'done'; conversation_id: string; message_id?: string; text: string; genui?: GenUIComponent[] }
   | { type: 'error'; message: string }
 
@@ -128,6 +129,7 @@ export function fileURL(attachment: Attachment, tag: string, conversationId?: st
 export type ChatHandlers = {
   onDelta: (text: string) => void
   onReplace: (text: string) => void
+  onGenUI: (components: GenUIComponent[]) => void
   onDone: (event: Extract<ChatStreamEvent, { type: 'done' }>) => void
   onError: (message: string) => void
 }
@@ -177,6 +179,7 @@ export async function streamChat(
       }
       if (event.type === 'delta') handlers.onDelta(event.text)
       else if (event.type === 'replace') handlers.onReplace(event.text)
+      else if (event.type === 'genui') handlers.onGenUI(event.components)
       else if (event.type === 'done') handlers.onDone(event)
       else if (event.type === 'error') handlers.onError(event.message)
     }

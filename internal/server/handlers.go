@@ -301,6 +301,8 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	}, func(full string) error {
 		sentText = true
 		return stream.event(map[string]any{"type": "replace", "text": full})
+	}, func(components []chatgpt.GenUIComponent) error {
+		return stream.event(map[string]any{"type": "genui", "components": components})
 	})
 	if err != nil {
 		stream.event(map[string]any{"type": "error", "message": displayError(err)})
