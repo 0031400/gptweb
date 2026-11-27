@@ -213,7 +213,7 @@ data: {"type":"done","conversation_id":"...","message_id":"...","text":"你好",
 - `link`：`{ url, title }`
 - `charts_widget_v2`：`{ chartType, data, xKey/nameKey/valueKey, series, description }`
 - `map_widget_v2`：不带 data，前端显示「未实现」
-- `interactive_block`：上游没有范围；后端按 `{@body ... DIL.useState(...)}` + 后续顶层 `<box>/<row>` 推导区间，不带 data，前端显示「未实现」
+- DIL 交互块（`{@body ...}`、`{#if}` 或包含交互标签的顶层 `box/row/grid`）由后端识别为整块 `dil_block`，前端整块显示「未实现」；块内嵌套的顶层 GenUI 也会一起隐藏
 
 前端按类型选择实现，未实现的类型显示「未实现」。
 

@@ -183,8 +183,8 @@ function MapWidget() {
   return <Unimplemented type="map_widget_v2" />
 }
 
-function InteractiveBlockWidget() {
-  return <Unimplemented type="interactive_block" />
+function DILBlockWidget() {
+  return <Unimplemented type="dil_block" />
 }
 
 function UnknownWidget({ type }: { type: string }) {
@@ -207,8 +207,8 @@ function GenUIBlock({ component }: { component: GenUIComponent }) {
     case 'map_widget_v2':
     case 'map':
       return <MapWidget />
-    case 'interactive_block':
-      return <InteractiveBlockWidget />
+    case 'dil_block':
+      return <DILBlockWidget />
     default:
       return <UnknownWidget type={component.type} />
   }
@@ -239,7 +239,7 @@ function stripContainerTags(value: string): string {
       const char = value[cursor]
       if (quote) {
         if (char === quote) quote = ''
-      } else if (char === '"' || char === "'") {
+      } else if (char === '"' || char === "'" || char === '`') {
         quote = char
       } else if (char === '{') {
         braces++
@@ -305,11 +305,6 @@ export function cleanGenUIText(text: string): string {
       const inner = close >= 0 ? after.slice(0, close) : after
       output.push(inner ? `> ${cleanInline(inner)}` : '>')
       if (close < 0) inQuote = true
-      continue
-    }
-    // 没有推导出区间的 DIL 声明/条件行也不要直接显示。
-    if (/^\s*\{(?:@body|#if|:else|\/if|#each|\/each|@html)\b/.test(line)) {
-      output.push('')
       continue
     }
     // GenUI 容器会把正文缩进 4-6 格；去掉这层缩进，避免 Markdown

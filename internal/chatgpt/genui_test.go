@@ -50,16 +50,3 @@ func TestNormalizeGenUIWritingBlockData(t *testing.T) {
 		t.Fatalf("writing data = %#v", components[0].Data)
 	}
 }
-
-func TestDeriveInteractiveBlocks(t *testing.T) {
-	text := "开头\n\n{@body const [value,setValue] = DIL.useState(\"\")}\n<box border radius=\"lg\">\n  <input value={value}/>\n</box>\n\n结尾"
-	components := deriveInteractiveBlocks(text, nil)
-	if len(components) != 1 {
-		t.Fatalf("got %d components, want 1", len(components))
-	}
-	got := string([]rune(text)[components[0].StartIndex:components[0].EndIndex])
-	want := "{@body const [value,setValue] = DIL.useState(\"\")}\n<box border radius=\"lg\">\n  <input value={value}/>\n</box>"
-	if got != want {
-		t.Fatalf("range = %q, want %q", got, want)
-	}
-}

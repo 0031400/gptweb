@@ -6,7 +6,6 @@ import (
 	"sort"
 	"strings"
 	"unicode/utf16"
-	"unicode/utf8"
 )
 
 var tagAttributePattern = regexp.MustCompile(`([A-Za-z_][\w-]*)\s*=\s*"([^"]*)"`)
@@ -36,9 +35,7 @@ func normalizeGenUI(text string, metadata map[string]any) []GenUIComponent {
 			Data:       genuiData(componentType, source, value, results),
 		})
 	}
-	// {@body ... DIL.useState(...)} 交互块没有 genui_components 条目，
-	// 按 parts 里的声明 + 后续顶层容器推导一个区间，前端统一显示「未实现」。
-	components = append(components, deriveInteractiveBlocks(text, components)...)
+	components = mergeDILBlocks(components, deriveDILBlocks(text))
 	if len(components) == 0 {
 		return nil
 	}
@@ -46,173 +43,6 @@ func normalizeGenUI(text string, metadata map[string]any) []GenUIComponent {
 		return components[i].StartIndex < components[j].StartIndex
 	})
 	return components
-}
-
-func deriveInteractiveBlocks(text string, existing []GenUIComponent) []GenUIComponent {
-	var components []GenUIComponent
-	searchAt := 0
-	for {
-		relative := strings.Index(text[searchAt:], "{@body")
-		if relative < 0 {
-			break
-		}
-		start := searchAt + relative
-		searchAt = start + len("{@body")
-		lineStart := strings.LastIndexByte(text[:start], '\n') + 1
-		if strings.TrimSpace(text[lineStart:start]) != "" || insideCodeFence(text, start) {
-			continue
-		}
-		cursor := lineStart
-		for cursor < len(text) {
-			lineEnd := strings.IndexByte(text[cursor:], '\n')
-			if lineEnd < 0 {
-				lineEnd = len(text)
-			} else {
-				lineEnd += cursor
-			}
-			line := strings.TrimSpace(text[cursor:lineEnd])
-			if line == "" || strings.HasPrefix(line, "{@body") {
-				cursor = lineEnd + 1
-				continue
-			}
-			break
-		}
-		relative = strings.IndexByte(text[cursor:], '<')
-		if relative < 0 {
-			continue
-		}
-		open := cursor + relative
-		if strings.TrimSpace(text[cursor:open]) != "" {
-			continue
-		}
-		name := tagNameAt(text, open)
-		if name == "" {
-			continue
-		}
-		end := matchingTagEnd(text, open, name)
-		if end <= start {
-			continue
-		}
-		startIndex := utf8.RuneCountInString(text[:lineStart])
-		endIndex := utf8.RuneCountInString(text[:end])
-		if overlapsGenUI(existing, startIndex, endIndex) || overlapsGenUI(components, startIndex, endIndex) {
-			searchAt = end
-			continue
-		}
-		components = append(components, GenUIComponent{
-			Type:       "interactive_block",
-			StartIndex: startIndex,
-			EndIndex:   endIndex,
-		})
-		searchAt = end
-	}
-	return components
-}
-
-func insideCodeFence(text string, position int) bool {
-	inFence := false
-	for _, line := range strings.Split(text[:position], "\n") {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
-			inFence = !inFence
-		}
-	}
-	return inFence
-}
-
-func overlapsGenUI(components []GenUIComponent, start, end int) bool {
-	for _, component := range components {
-		if start < component.EndIndex && component.StartIndex < end {
-			return true
-		}
-	}
-	return false
-}
-
-func tagNameAt(text string, position int) string {
-	if position >= len(text) || text[position] != '<' {
-		return ""
-	}
-	cursor := position + 1
-	if cursor < len(text) && text[cursor] == '/' {
-		cursor++
-	}
-	start := cursor
-	for cursor < len(text) {
-		char := text[cursor]
-		if char >= 'a' && char <= 'z' || char >= 'A' && char <= 'Z' || char >= '0' && char <= '9' || char == '-' {
-			cursor++
-			continue
-		}
-		break
-	}
-	return text[start:cursor]
-}
-
-func matchingTagEnd(text string, open int, name string) int {
-	openEnd := tagEnd(text, open)
-	if openEnd < 0 {
-		return -1
-	}
-	if openEnd >= 2 && text[openEnd-2] == '/' {
-		return openEnd
-	}
-	depth := 1
-	cursor := openEnd
-	for cursor < len(text) {
-		relative := strings.IndexByte(text[cursor:], '<')
-		if relative < 0 {
-			return -1
-		}
-		position := cursor + relative
-		next := tagEnd(text, position)
-		if next < 0 {
-			return -1
-		}
-		if tagNameAt(text, position) == name {
-			closing := position+1 < len(text) && text[position+1] == '/'
-			selfClosing := next >= 2 && text[next-2] == '/'
-			if closing {
-				depth--
-				if depth == 0 {
-					return next
-				}
-			} else if !selfClosing {
-				depth++
-			}
-		}
-		cursor = next
-	}
-	return -1
-}
-
-func tagEnd(text string, position int) int {
-	quote := byte(0)
-	braces := 0
-	for cursor := position + 1; cursor < len(text); cursor++ {
-		char := text[cursor]
-		if quote != 0 {
-			if char == quote {
-				quote = 0
-			}
-			continue
-		}
-		switch char {
-		case '"', '\'':
-			quote = char
-		case '{':
-			braces++
-		case '}':
-			if braces > 0 {
-				braces--
-			}
-		case '>':
-			if braces == 0 {
-				return cursor + 1
-			}
-		}
-	}
-	return -1
 }
 
 func genuiSource(text string, start, end int) string {
