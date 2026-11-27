@@ -45,7 +45,7 @@ function CodeBlock({ children }: { children?: ReactNode }) {
   )
 }
 
-// ChatGPT 的 fallbackMarkdown 使用 LaTeX 的 \[...\] 和 \(...\) 分隔符，
+// ChatGPT 的 content.parts 使用 LaTeX 的 \[...\] 和 \(...\) 分隔符，
 // remark-math 只识别 $...$ / $$...$$；在代码块和行内代码之外做转换。
 function convertMathSegment(segment: string): string {
   let result = segment.replace(/\\\[([\s\S]*?)\\\]/g, (_, body: string) => `\n\n$$\n${body.trim()}\n$$\n\n`)

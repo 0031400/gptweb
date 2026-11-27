@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -314,7 +315,7 @@ type Conversation struct {
 }
 
 func (c *Client) GetConversation(ctx context.Context, id string) (*Conversation, error) {
-	// 只使用复数接口：它的 messages 里带有完整的 fallbackMarkdown。
+	// 只使用复数接口：它的 messages 里带有完整的 content.parts。
 	path := "/backend-api/conversations/" + id + "?num_turns=100&include_has_versions=true"
 	resp, err := c.do(ctx, fhttp.MethodGet, path, nil, nil)
 	if err != nil {
@@ -364,9 +365,12 @@ func normalizeMessage(m map[string]any) (Message, bool) {
 	}
 	metadata, _ := m["metadata"].(map[string]any)
 	channel, _ := m["channel"].(string)
-	fallback := fallbackMarkdown(metadata)
 	content, _ := m["content"].(map[string]any)
 	attachments := messageAttachments(content, metadata)
+	text := contentText(content)
+	if role == "assistant" {
+		text = cleanAssistantParts(text)
+	}
 
 	// 图片生成等工具结果放在 role=tool 的消息里，最终 assistant 文本
 	// 并不会带附件；把带附件的 tool 消息作为一条 assistant 附件消息，
@@ -380,17 +384,9 @@ func normalizeMessage(m map[string]any) (Message, bool) {
 	}
 
 	// 网页端有时会把同一轮回答再生成一条 hidden 的自定义 UI 消息；
-	// 只有它自己带 fallbackMarkdown 时才需要保留，否则会与可见消息重复。
-	if metadata["is_visually_hidden_from_conversation"] == true && (channel != "final" || fallback == "") {
+	// 只有它自己带正文时才需要保留，否则会与可见消息重复。
+	if metadata["is_visually_hidden_from_conversation"] == true && (channel != "final" || strings.TrimSpace(text) == "") {
 		return Message{}, false
-	}
-	text := ""
-	if role == "assistant" {
-		// 助手内容只使用 fallbackMarkdown；没有该字段时留空（附件仍保留）。
-		text = strings.TrimSpace(fallback)
-	} else {
-		// 用户消息没有 fallbackMarkdown，只能使用 content.parts。
-		text = contentText(content)
 	}
 	if strings.TrimSpace(text) == "" && len(attachments) == 0 {
 		return Message{}, false
@@ -545,13 +541,159 @@ func int64Value(value any) int64 {
 	return 0
 }
 
-func fallbackMarkdown(metadata map[string]any) string {
-	dil, _ := metadata["model_dil_v2"].(map[string]any)
-	if dil == nil {
+var (
+	badgePattern      = regexp.MustCompile(`(?is)<badge\b[^>]*>(.*?)</badge>`)
+	linkPattern       = regexp.MustCompile(`(?is)<Link\b([^>]*)>(.*?)</Link>|<Link\b([^>]*)/>`)
+	asyncImagePattern = regexp.MustCompile(`(?is)<AsyncImage\b[^>]*/>`)
+	iconPattern       = regexp.MustCompile(`(?is)<icon\b[^>]*/>|<icon\b[^>]*>.*?</icon>`)
+	dividerPattern    = regexp.MustCompile(`(?is)<divider\b[^>]*/>`)
+)
+
+var genuiContainerNames = map[string]bool{
+	"box": true, "list": true, "list-item": true, "row": true, "text": true,
+	"button": true, "radio": true, "radio-group": true, "option": true,
+	"checkbox": true, "switch": true, "input": true, "textarea": true,
+	"select": true, "form": true, "card": true, "field": true, "label": true,
+	"slider": true, "CodeBlock": true,
+}
+
+// cleanAssistantParts 去掉 content.parts 里 ChatGPT 私有的 GenUI 容器标签。
+// 只处理代码块和行内代码之外的文本，避免误伤 C#/XAML 示例里的 <T>、<Grid> 等。
+func cleanAssistantParts(text string) string {
+	if text == "" {
 		return ""
 	}
-	value, _ := dil["fallbackMarkdown"].(string)
-	return value
+	lines := strings.Split(text, "\n")
+	inFence := false
+	for index, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
+			inFence = !inFence
+			continue
+		}
+		if inFence {
+			continue
+		}
+		lines[index] = cleanInlineSegments(line)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func cleanInlineSegments(line string) string {
+	parts := strings.Split(line, "`")
+	for index := range parts {
+		if index%2 == 0 {
+			parts[index] = cleanGenUITags(parts[index])
+		}
+	}
+	return strings.Join(parts, "`")
+}
+
+func cleanGenUITags(text string) string {
+	text = badgePattern.ReplaceAllString(text, "$1")
+	text = linkPattern.ReplaceAllStringFunc(text, func(match string) string {
+		groups := linkPattern.FindStringSubmatch(match)
+		if groups == nil {
+			return match
+		}
+		attrs := groups[1]
+		label := ""
+		if groups[2] != "" {
+			attrs = groups[1]
+			label = groups[2]
+		} else {
+			attrs = groups[3]
+		}
+		url := tagAttribute(attrs, "url")
+		title := tagAttribute(attrs, "title")
+		if title == "" {
+			title = label
+		}
+		if title == "" {
+			title = url
+		}
+		if url == "" {
+			return title
+		}
+		return "[" + title + "](" + url + ")"
+	})
+	text = asyncImagePattern.ReplaceAllString(text, "[图片]")
+	text = iconPattern.ReplaceAllString(text, "")
+	text = dividerPattern.ReplaceAllString(text, "")
+	text = stripGenUIContainers(text)
+	return text
+}
+
+// stripGenUIContainers 去掉已知的 GenUI 容器标签，但保留其中的文字。
+// 用括号深度扫描而不是 [^>]*，因为 button 的 onClick={()=>...} 里也有 >。
+func stripGenUIContainers(text string) string {
+	var builder strings.Builder
+	for index := 0; index < len(text); {
+		if text[index] != '<' {
+			builder.WriteByte(text[index])
+			index++
+			continue
+		}
+		cursor := index + 1
+		if cursor < len(text) && text[cursor] == '/' {
+			cursor++
+		}
+		nameStart := cursor
+		for cursor < len(text) && isTagNameChar(text[cursor]) {
+			cursor++
+		}
+		name := text[nameStart:cursor]
+		if !genuiContainerNames[name] {
+			builder.WriteByte(text[index])
+			index++
+			continue
+		}
+		quoted := byte(0)
+		braces := 0
+		for ; cursor < len(text); cursor++ {
+			char := text[cursor]
+			if quoted != 0 {
+				if char == quoted {
+					quoted = 0
+				}
+				continue
+			}
+			switch char {
+			case '"', '\'':
+				quoted = char
+			case '{':
+				braces++
+			case '}':
+				if braces > 0 {
+					braces--
+				}
+			case '>':
+				if braces == 0 {
+					cursor++
+					goto done
+				}
+			}
+		}
+	done:
+		if cursor > len(text) {
+			cursor = len(text)
+		}
+		index = cursor
+	}
+	return builder.String()
+}
+
+func isTagNameChar(char byte) bool {
+	return char >= 'a' && char <= 'z' || char >= 'A' && char <= 'Z' || char >= '0' && char <= '9' || char == '-'
+}
+
+func tagAttribute(tag, name string) string {
+	pattern := regexp.MustCompile(`(?is)\b` + regexp.QuoteMeta(name) + `\s*=\s*"([^"]*)"`)
+	match := pattern.FindStringSubmatch(tag)
+	if len(match) < 2 {
+		return ""
+	}
+	return match[1]
 }
 
 func contentText(content map[string]any) string {
@@ -741,8 +883,8 @@ func (c *Client) SendMessage(ctx context.Context, conversationID, parentID, text
 	}
 	result := SendResult{ConversationID: convID, MessageID: msgID, Text: strings.TrimSpace(full)}
 	if err == nil && convID != "" && full == "" {
-		// 流里没有 fallbackMarkdown 时，回头读一次会话作为兜底；
-		// 历史归一化同样只使用 metadata.model_dil_v2.fallbackMarkdown。
+		// 流里没有 content.parts 文本时，回头读一次会话作为兜底；
+		// 历史归一化同样使用 content.parts。
 		if conv, getErr := c.GetConversation(ctx, convID); getErr == nil {
 			for i := len(conv.Messages) - 1; i >= 0; i-- {
 				if conv.Messages[i].Role == "assistant" {
@@ -882,7 +1024,7 @@ func (c *Client) chatRequirements(ctx context.Context, s *Session, pToken string
 
 // ---------------- SSE ----------------
 
-type fallbackSSEState struct {
+type partsSSEState struct {
 	currentID string
 	current   string
 	bestID    string
@@ -891,7 +1033,7 @@ type fallbackSSEState struct {
 	emittedID string
 }
 
-func (s *fallbackSSEState) update(value string, onDelta, onReplace func(string) error) error {
+func (s *partsSSEState) update(value string, onDelta, onReplace func(string) error) error {
 	if value == "" {
 		return nil
 	}
@@ -919,7 +1061,7 @@ func (s *fallbackSSEState) update(value string, onDelta, onReplace func(string) 
 		}
 		return nil
 	}
-	// fallbackMarkdown 有时会用 replace 覆盖整段文本，无法用增量表达。
+	// content.parts 也可能用 replace 覆盖整段文本，无法用增量表达。
 	s.emitted = value
 	if onReplace != nil {
 		return onReplace(value)
@@ -927,9 +1069,13 @@ func (s *fallbackSSEState) update(value string, onDelta, onReplace func(string) 
 	return nil
 }
 
-func (s *fallbackSSEState) setMessage(message map[string]any, onDelta, onReplace func(string) error) error {
+func (s *partsSSEState) setMessage(message map[string]any, onDelta, onReplace func(string) error) error {
 	author, _ := message["author"].(map[string]any)
 	if author["role"] != "assistant" {
+		return nil
+	}
+	channel, _ := message["channel"].(string)
+	if channel != "" && channel != "final" {
 		return nil
 	}
 	id, _ := message["id"].(string)
@@ -937,19 +1083,19 @@ func (s *fallbackSSEState) setMessage(message map[string]any, onDelta, onReplace
 		s.currentID = id
 		s.current = ""
 	}
-	metadata, _ := message["metadata"].(map[string]any)
-	if value := fallbackMarkdown(metadata); value != "" {
+	content, _ := message["content"].(map[string]any)
+	if value := contentText(content); value != "" {
 		return s.update(value, onDelta, onReplace)
 	}
 	return nil
 }
 
-func (s *fallbackSSEState) applyPatch(operation map[string]any, onDelta, onReplace func(string) error) error {
+func (s *partsSSEState) applyPatch(operation map[string]any, onDelta, onReplace func(string) error) error {
 	path, _ := operation["p"].(string)
 	action, _ := operation["o"].(string)
 	value, _ := operation["v"].(string)
-	switch path {
-	case "/message/metadata/model_dil_v2/fallbackMarkdown":
+	switch {
+	case path == "/message/content/parts/0":
 		switch action {
 		case "append":
 			return s.update(s.current+value, onDelta, onReplace)
@@ -957,26 +1103,34 @@ func (s *fallbackSSEState) applyPatch(operation map[string]any, onDelta, onRepla
 			if value != "" {
 				return s.update(value, onDelta, onReplace)
 			}
+			if action == "replace" {
+				s.current = ""
+			}
 		case "remove":
 			s.current = ""
 		}
-	case "/message/metadata":
-		if metadata, ok := operation["v"].(map[string]any); ok {
-			if fallback := fallbackMarkdown(metadata); fallback != "" {
-				return s.update(fallback, onDelta, onReplace)
+	case path == "/message/content/parts":
+		if parts, ok := operation["v"].([]any); ok {
+			s.current = ""
+			if text := contentText(map[string]any{"parts": parts}); text != "" {
+				return s.update(text, onDelta, onReplace)
 			}
 		}
-	case "/message/metadata/model_dil_v2":
-		if dil, ok := operation["v"].(map[string]any); ok {
-			if fallback, ok := dil["fallbackMarkdown"].(string); ok && fallback != "" {
-				return s.update(fallback, onDelta, onReplace)
+	case path == "/message/content":
+		if content, ok := operation["v"].(map[string]any); ok {
+			if text := contentText(content); text != "" {
+				return s.update(text, onDelta, onReplace)
 			}
+		}
+	case path == "/message":
+		if message, ok := operation["v"].(map[string]any); ok {
+			return s.setMessage(message, onDelta, onReplace)
 		}
 	}
 	return nil
 }
 
-func processFallbackEvent(event map[string]any, state *fallbackSSEState, onDelta, onReplace func(string) error) error {
+func processPartsEvent(event map[string]any, state *partsSSEState, onDelta, onReplace func(string) error) error {
 	if message, ok := event["message"].(map[string]any); ok {
 		if err := state.setMessage(message, onDelta, onReplace); err != nil {
 			return err
@@ -1019,18 +1173,24 @@ func processFallbackEvent(event map[string]any, state *fallbackSSEState, onDelta
 			return err
 		}
 	}
+	// 文本增量有时只带一个 v 字符串、没有 p 路径（事件只有 v 一个字段）。
+	if len(event) == 1 {
+		if value, ok := event["v"].(string); ok && state.currentID != "" {
+			return state.update(state.current+value, onDelta, onReplace)
+		}
+	}
 	return nil
 }
 
-// readConversationSSE 只从 fallbackMarkdown 读取助手正文。
-// 网页端把 fallbackMarkdown 放在 /message/metadata/model_dil_v2/fallbackMarkdown
-// 的 patch 操作里，append/replace 混合更新；这里维护状态并输出增量。
+// readConversationSSE 从 content.parts 读取助手正文。
+// 文本通常通过 /message/content/parts/0 的 append/replace patch 下发，
+// 这里维护状态并输出增量；完整的消息也可能直接出现在 add 事件里。
 func readConversationSSE(reader io.Reader, onDelta, onReplace func(string) error) (string, string, string, error) {
 	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 64*1024), 32*1024*1024)
 	conversationID := ""
 	upstreamError := ""
-	state := &fallbackSSEState{}
+	state := &partsSSEState{}
 	for scanner.Scan() {
 		line := scanner.Text()
 		if !strings.HasPrefix(line, "data:") {
@@ -1059,7 +1219,7 @@ func readConversationSSE(reader io.Reader, onDelta, onReplace func(string) error
 				conversationID = id
 			}
 		}
-		if err := processFallbackEvent(event, state, onDelta, onReplace); err != nil {
+		if err := processPartsEvent(event, state, onDelta, onReplace); err != nil {
 			return conversationID, state.bestID, state.best, err
 		}
 	}
@@ -1074,7 +1234,7 @@ func readConversationSSE(reader io.Reader, onDelta, onReplace func(string) error
 	if messageID == "" {
 		messageID = state.currentID
 	}
-	text = strings.TrimSpace(text)
+	text = strings.TrimSpace(cleanAssistantParts(text))
 	if text == "" && upstreamError != "" {
 		return conversationID, messageID, text, fmt.Errorf("ChatGPT 返回错误：%s", upstreamError)
 	}
